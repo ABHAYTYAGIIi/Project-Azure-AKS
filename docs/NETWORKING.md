@@ -14,6 +14,21 @@ Central India is shown in the subscription's regional quota list with a 4-vCPU r
 
 The project will use one primary region. We will not introduce a second AKS region unless a later requirement makes it necessary.
 
+## Confirmed Public IP Constraint
+
+The Azure portal's Networking quota view for Central India shows multiple public-IP quota types. The general public-IP quota visible in the screenshot includes a limit of **3**, with current usage **0**. However, the specific **Public IPv4 Addresses - Standard** quota shows:
+
+```text
+Current usage: 0
+Quota:         0
+```
+
+This is important because the modern Application Gateway v2 architecture requires a Standard SKU public IP for an internet-facing frontend. Microsoft documents that Application Gateway v2 uses Standard SKU public IPs, and Application Gateway v1 is no longer an appropriate new-deployment option. citeturn0search1turn0search0
+
+**Current status: Application Gateway deployment is blocked until we confirm whether the Student subscription can obtain a Standard public IP quota increase.** We will not work around this by using a deprecated Application Gateway v1 design.
+
+The next action is to inspect the quota-adjustment option for the **Public IPv4 Addresses - Standard** row. If Azure allows a quota request, we will request only the minimum required capacity: **1 Standard public IPv4 address**.
+
 ## Objectives
 
 - Run AKS as a private cluster where supported by the subscription and selected region.
@@ -117,7 +132,8 @@ Before provisioning:
 
 - [x] Check Azure for Students regional vCPU quota — **4 vCPUs observed in the checked regions; current usage 0**.
 - [x] Select a working region — **Central India (`centralindia`)**.
-- [ ] Check Public IP quota.
+- [x] Check Public IP quota — **general public-IP quota 3; Standard IPv4 quota 0 in Central India**.
+- [ ] Determine whether Standard public IP quota can be increased from 0.
 - [ ] Check the selected region supports the required AKS features.
 - [ ] Check the selected region supports the intended Application Gateway/Ingress integration.
 - [ ] Check available AKS VM SKUs.
@@ -130,7 +146,7 @@ Before provisioning:
 
 ## Important Decision
 
-**Do not provision the VNet or AKS cluster until the actual Public IP quota, required VM SKU availability, and networking requirements have been verified.** The final network ranges and AKS networking mode must be based on those facts rather than assumed Azure defaults.
+**Do not provision the VNet or AKS cluster until the Standard public IP requirement, required VM SKU availability, and networking requirements have been verified.** The final network ranges and AKS networking mode must be based on those facts rather than assumed Azure defaults.
 
 ## Phase 1 Principle
 
