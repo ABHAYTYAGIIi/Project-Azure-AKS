@@ -4,7 +4,15 @@
 
 **Status: Design only — no Azure networking resources should be provisioned yet.**
 
-The networking design is intentionally quota-conscious because this project uses an Azure for Students subscription. Actual subscription quotas must be checked before selecting the final CIDRs, VM SKU, node count, and public IP allocation.
+The networking design is quota-conscious because this project uses an Azure for Students subscription. The current observed regular regional compute quota is **4 vCPUs** in the checked regions, with current usage at 0. The subscription UI also indicates that quota adjustment is not currently eligible. This constraint must guide the final AKS node size and count.
+
+## Region Decision
+
+**Working primary region: Central India (`centralindia`).**
+
+Central India is shown in the subscription's regional quota list with a 4-vCPU regular regional quota and is a supported AKS region. Before provisioning, the exact VM SKU and all required supporting Azure services must still be validated for the subscription and region.
+
+The project will use one primary region. We will not introduce a second AKS region unless a later requirement makes it necessary.
 
 ## Objectives
 
@@ -16,6 +24,7 @@ The networking design is intentionally quota-conscious because this project uses
 - Use Kubernetes Ingress for path-based routing.
 - Keep the network design simple enough for the Student subscription.
 - Leave enough subnet IP capacity for AKS and Application Gateway without unnecessarily over-allocating address space.
+- Keep AKS compute within the observed 4-vCPU regional quota.
 
 ## Target Traffic Flow
 
@@ -106,7 +115,8 @@ The preferred design is to keep database access restricted and avoid unnecessary
 
 Before provisioning:
 
-- [ ] Check Azure for Students regional vCPU quota.
+- [x] Check Azure for Students regional vCPU quota — **4 vCPUs observed in the checked regions; current usage 0**.
+- [x] Select a working region — **Central India (`centralindia`)**.
 - [ ] Check Public IP quota.
 - [ ] Check the selected region supports the required AKS features.
 - [ ] Check the selected region supports the intended Application Gateway/Ingress integration.
@@ -120,7 +130,7 @@ Before provisioning:
 
 ## Important Decision
 
-**Do not provision the VNet or AKS cluster until the actual subscription quotas have been inspected.** The final network ranges and AKS networking mode must be based on those facts rather than assumed Azure defaults.
+**Do not provision the VNet or AKS cluster until the actual Public IP quota, required VM SKU availability, and networking requirements have been verified.** The final network ranges and AKS networking mode must be based on those facts rather than assumed Azure defaults.
 
 ## Phase 1 Principle
 
