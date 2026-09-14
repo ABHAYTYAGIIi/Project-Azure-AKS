@@ -126,6 +126,15 @@ Because AKS is planned as a private cluster, the CI/CD runner must have network 
 
 Azure for Students limits such as vCPU/core quotas, public IP quotas, networking limits, regional availability, and service availability must be verified before provisioning. Infrastructure decisions will be based on the actual subscription quotas rather than assumed defaults.
 
+Current observations:
+
+- Primary region under consideration: **Central India (`centralindia`)**.
+- Regional vCPU quota observed: **4 vCPUs**, current usage 0.
+- Standard public IPv4 quota observed in Central India: **3**, current usage 0.
+- Quota increase controls appear in the portal, but the Azure for Students subscription may restrict quota adjustments; do not assume an increase will be approved.
+- AKS portal presets are documented separately in `docs/AKS_CLUSTER_PRESETS.md`.
+- The four portal presets should not be deployed blindly because their current default node pools are much larger than our student-subscription quota allows.
+
 ## Documentation
 
 Detailed documentation will be maintained under `docs/` as the project progresses.
@@ -136,6 +145,7 @@ Planned documents:
 - `docs/ARCHITECTURE.md` — application and Azure architecture
 - `docs/NETWORKING.md` — VNet, subnets, IP allocation, DNS, and connectivity
 - `docs/KUBERNETES.md` — AKS, namespaces, deployments, services, ConfigMaps, Secrets, and Ingress
+- `docs/AKS_CLUSTER_PRESETS.md` — AKS portal presets, purposes, costs, and selection guidance
 - `docs/SECURITY.md` — identity, access, secrets, exposure, and security decisions
 - `docs/INFRASTRUCTURE.md` — Azure resources and configuration
 - `docs/TROUBLESHOOTING.md` — problems and solutions
