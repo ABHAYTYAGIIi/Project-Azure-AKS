@@ -128,31 +128,45 @@ Azure for Students limits such as vCPU/core quotas, public IP quotas, networking
 
 Current observations:
 
-- Primary region under consideration: **Central India (`centralindia`)**.
-- Regional vCPU quota observed: **4 vCPUs**, current usage 0.
-- Standard public IPv4 quota observed in Central India: **3**, current usage 0.
+- Primary region: **Central India (`centralindia`)**.
+- Regional vCPU quota observed: **4 vCPUs**, current usage 0 at the earlier quota check.
+- Standard public IPv4 quota observed in Central India: **3**, current usage 0 at the earlier quota check.
 - Quota increase controls appear in the portal, but the Azure for Students subscription may restrict quota adjustments; do not assume an increase will be approved.
 - AKS portal presets are documented separately in `docs/AKS_CLUSTER_PRESETS.md`.
 - The four portal presets should not be deployed blindly because their current default node pools are much larger than our student-subscription quota allows.
 
 ## Documentation
 
-Detailed documentation will be maintained under `docs/` as the project progresses.
+Detailed documentation is maintained under `docs/` as the project progresses.
 
-Planned documents:
+Key documents:
 
 - `docs/PROJECT.md` — requirements, scope, milestones, and decisions
 - `docs/ARCHITECTURE.md` — application and Azure architecture
 - `docs/NETWORKING.md` — VNet, subnets, IP allocation, DNS, and connectivity
-- `docs/KUBERNETES.md` — AKS, namespaces, deployments, services, ConfigMaps, Secrets, and Ingress
+- `docs/AKS_GENERAL_KNOWLEDGE.md` — general AKS/Kubernetes learning and reference material
 - `docs/AKS_CLUSTER_PRESETS.md` — AKS portal presets, purposes, costs, and selection guidance
+- `docs/AKS_VERIFIED_STATE.md` — verified AKS cluster, nodes, system pods, services, deployments, and Ingress state
+- `docs/AKS_NODE_RESOURCE_GROUP.md` — AKS node resource group concepts and project notes
+- `docs/AKS_RESOURCE_GROUPS_AND_MONITORING.md` — resource group and monitoring notes
 - `docs/SECURITY.md` — identity, access, secrets, exposure, and security decisions
-- `docs/INFRASTRUCTURE.md` — Azure resources and configuration
+- `docs/INFRASTRUCTURE.md` — Azure resources, current infrastructure state, and configuration
 - `docs/TROUBLESHOOTING.md` — problems and solutions
 - `docs/CHANGELOG.md` — chronological project changes
 
 ## Current Status
 
-**Phase 1 — Planning / Infrastructure preparation**
+**Phase 1 — Infrastructure validation / application deployment preparation**
 
-No Azure infrastructure has been provisioned yet.
+AKS infrastructure is provisioned and verified.
+
+Verified:
+
+- Resource group `rg-azure-aks` exists in Central India.
+- AKS cluster `aks-azure-project` is accessible through `kubectl`.
+- Kubernetes version is `1.35.7`.
+- Two AKS nodes are `Ready`.
+- AKS system pods, services, and deployments have been inspected and are running/available as recorded in `docs/AKS_VERIFIED_STATE.md`.
+- No Kubernetes Ingress resource is currently deployed.
+
+Application workloads, namespaces, Ingress, Application Gateway, HTTPS, database connectivity, and CI/CD remain separate project steps and will be documented only after verification.
