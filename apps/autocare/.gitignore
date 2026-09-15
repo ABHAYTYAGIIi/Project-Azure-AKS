@@ -1,0 +1,12 @@
+# Local environment configuration
+.env
+.env.local
+
+# JavaScript dependencies and build artifacts
+**/node_modules/
+**/dist/
+
+# Python virtual environments and caches
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
