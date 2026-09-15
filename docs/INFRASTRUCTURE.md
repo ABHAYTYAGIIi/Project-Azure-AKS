@@ -2,37 +2,48 @@
 
 ## Current State
 
-No Azure infrastructure has been provisioned as part of this project yet.
+Azure infrastructure has now been provisioned and the AKS cluster has been successfully validated.
 
-This document records the intended infrastructure and the checks required before provisioning.
+### Verified infrastructure state
 
-## Planned Azure Resources
+- Resource group: `rg-azure-aks`
+- AKS cluster: `aks-azure-project`
+- Region: `centralindia`
+- Kubernetes version: `1.35.7`
+- Two AKS nodes are present and both are `Ready`.
+- `kubectl` access is configured and the active context is `aks-azure-project`.
+- AKS system pods, services, and deployments were successfully inspected.
+- No Kubernetes Ingress resource is currently deployed.
 
-| Resource | Purpose | Public exposure |
+Detailed verified AKS/Kubernetes state is maintained in `docs/AKS_VERIFIED_STATE.md`.
+
+## Planned / Remaining Azure Resources
+
+| Resource | Purpose | Current project status |
 |---|---|---|
-| Resource Group | Logical management boundary | No |
-| VNet | Private network boundary | No |
-| Application Gateway | External application entry point, HTTPS/SSL, routing integration | Yes |
-| Public IP | Application Gateway public endpoint | Yes |
-| AKS | Kubernetes compute/control platform | API intended to be private |
-| Azure Container Registry | Store application container images | No direct application exposure |
-| Azure SQL Database | Managed relational database | Restricted |
+| Resource Group | Logical management boundary | Provisioned and verified |
+| VNet | Private network boundary | Verify against deployed configuration |
+| Application Gateway | External application entry point, HTTPS/SSL, routing integration | Planned / not yet verified |
+| Public IP | Application Gateway public endpoint | Planned / not yet verified |
+| AKS | Kubernetes compute/control platform | Provisioned and verified |
+| Azure Container Registry | Store application container images | Planned / verify when provisioned |
+| Azure SQL Database | Managed relational database | Planned / verify when provisioned |
 
 Additional resources will only be added when a concrete requirement exists.
 
 ## Quota-First Provisioning
 
-Because the subscription is Azure for Students, the following values must be obtained from the actual subscription before provisioning:
+Because the subscription is Azure for Students, infrastructure decisions continue to be based on actual subscription limits rather than assumed defaults.
+
+Before adding additional Azure resources, verify:
 
 - Regional vCPU quota and current usage
 - Public IP quota and current usage
 - Available VM SKUs
-- Regional availability of AKS and required networking features
+- Regional availability of required networking features
 - Regional availability of Application Gateway and the selected Ingress integration
-- Any relevant networking/IP limits
+- Relevant networking/IP limits
 - Available Azure SQL options
-
-No assumed quota value should be recorded as fact until it is verified in the subscription.
 
 ## Target Resource Relationship
 
@@ -57,27 +68,28 @@ Resource Group
 +-- Azure SQL Database
 ```
 
+The diagram remains the target architecture. It should not be interpreted as proof that every target resource has already been deployed.
+
 ## Cost/Resource Principles
 
 - Prefer the smallest viable compute SKU.
-- Start with one AKS node if it can satisfy the workload and assignment requirements.
-- Start workloads with one replica per environment/component.
+- Start workloads with the minimum viable replica count.
 - Define CPU and memory requests/limits.
 - Avoid unnecessary public IP addresses.
 - Avoid unnecessary always-on Azure resources.
 - Stop/delete temporary resources when they are no longer needed.
 - Do not provision optional enterprise components merely for architectural appearance.
 
-## Provisioning Order
+## Provisioning / Validation Order
 
 1. Inspect subscription quotas.
 2. Select region based on quotas and required service availability.
 3. Finalize VNet/subnet/IP plan.
 4. Create Resource Group.
 5. Create VNet and required subnets.
-6. Create Azure Container Registry.
-7. Create private AKS using the finalized networking plan.
-8. Validate AKS connectivity and health.
+6. Create Azure Container Registry if required.
+7. Create AKS using the finalized networking plan.
+8. Validate AKS connectivity and health. **Completed.**
 9. Create namespaces.
 10. Deploy application workloads.
 11. Configure Azure SQL connectivity.
