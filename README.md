@@ -8,9 +8,9 @@ Build a full-stack application and deploy it to Azure Kubernetes Service (AKS) u
 
 ## Technology Stack
 
-- Frontend: HTML, CSS, React
-- Backend: Node.js
-- Backend service: Python
+- Frontend: React / Vite
+- API: Node.js / Express
+- Maintenance service: Python / FastAPI
 - Database: Azure SQL Database (PaaS)
 - Container platform: Azure Kubernetes Service (AKS)
 - Container registry: Azure Container Registry (ACR)
@@ -20,19 +20,21 @@ Build a full-stack application and deploy it to Azure Kubernetes Service (AKS) u
 - Source control: GitHub
 - CI/CD: GitHub Actions (Phase 2)
 
-## Environments
+## Environment Strategy
 
-One AKS cluster will host three Kubernetes namespaces:
+The project will use **one application codebase** and environment-specific configuration rather than maintaining three separate application codebases.
+
+The target AKS model remains a single cluster with three namespaces:
 
 - `dev`
 - `qa`
 - `prod`
 
-The project requirement is to maintain three different application codebases for the three environments. The application architecture and Kubernetes structure will remain consistent while the environment-specific code is maintained separately.
+The same versioned application artifacts should be promoted between environments, with environment-specific configuration supplied through Kubernetes ConfigMaps/Secrets and GitHub Actions deployment inputs. QA and Production will not be created as separate source trees merely to represent environments.
 
 ## External Routing
 
-One Application Gateway will expose all three environments using a single public entry point and path-based routing:
+One Application Gateway is the target public entry point, with path-based routing:
 
 ```text
 https://<domain>/dev/*
@@ -42,46 +44,48 @@ https://<domain>/prod/*
 
 Kubernetes Ingress will route traffic to the appropriate services inside each namespace. Application services should remain internal and should not receive unnecessary public IPs.
 
-## Phase 1 — Infrastructure and Manual Deployment
+## Phase 1 — Infrastructure and Application Validation
 
-The first phase focuses on building and validating the infrastructure and application before introducing CI/CD.
+Phase 1 focuses on building and validating the infrastructure and application before introducing CI/CD.
 
-Planned sequence:
+Current sequence:
 
-1. Verify Azure for Students quotas and regional availability.
+1. Verify Azure for Students quotas and regional availability. **Completed for the current baseline.**
 2. Design VNet, subnets, IP allocation, DNS, and private AKS networking.
-3. Create the Azure resource group.
-4. Create Azure Container Registry.
-5. Create the private AKS cluster using a quota-conscious configuration.
-6. Create `dev`, `qa`, and `prod` namespaces.
-7. Build the three application codebases.
-8. Containerize the frontend, Node.js, and Python components.
-9. Deploy the applications manually to AKS.
+3. Create/verify the Azure resource group. **Completed.**
+4. Create/verify Azure Container Registry.
+5. Create/verify the AKS cluster. **Completed.**
+6. Validate the application locally in Development mode. **Completed.**
+7. Containerize the frontend, Node.js API, and Python maintenance service.
+8. Push images to ACR.
+9. Deploy the application manually to the AKS Development namespace.
 10. Configure ConfigMaps for non-sensitive configuration.
 11. Configure Secrets for sensitive configuration.
 12. Configure Azure SQL Database connectivity.
 13. Configure Kubernetes Ingress with path-based routing.
 14. Configure Application Gateway as the public HTTPS entry point.
 15. Configure SSL/HTTPS.
-16. Perform end-to-end testing.
+16. Perform end-to-end AKS validation.
 17. Document decisions, commands, problems, fixes, and validation results.
 
 ### Phase 1 Definition of Done
 
 - AKS is healthy.
-- `dev`, `qa`, and `prod` namespaces are operational.
+- Development application workloads are healthy.
 - Required deployments and services are healthy.
 - ConfigMaps are working.
 - Secrets are handled securely and are not committed to Git.
 - Application-to-database connectivity works.
-- Path-based Ingress routing works for all environments.
+- Path-based Ingress routing works.
 - Application Gateway exposes the application externally.
 - HTTPS/SSL works.
 - End-to-end application flow is verified.
 
+QA and Production namespaces are promotion targets, not separate application codebases. They should be introduced only after the Development deployment is stable.
+
 ## Phase 2 — GitHub Actions / CI/CD
 
-CI/CD will be introduced only after Phase 1 is stable.
+CI/CD will be introduced after the Development AKS deployment baseline is stable.
 
 Target flow:
 
@@ -94,33 +98,65 @@ Build + Test
   ↓
 Build container images
   ↓
-Push images to ACR
+Push immutable images to ACR
   ↓
-Deploy to private AKS
+Deploy to AKS Development
   ↓
-Ingress
+Smoke / health validation
   ↓
-Application Gateway
+Promote same artifacts/configuration model to QA
   ↓
-HTTPS
+Approval / promotion gate
+  ↓
+Promote to Production
 ```
 
-Because AKS is planned as a private cluster, the CI/CD runner must have network access to the private AKS API. A self-hosted GitHub Actions runner inside the Azure network is the initial architecture under consideration.
+Because the target AKS cluster is private, the CI/CD runner must have network access to the private AKS API. A self-hosted GitHub Actions runner inside the Azure network is the initial architecture under consideration and will be validated against the Student subscription constraints.
 
-## Best-Practice Principles
+## Current Status
 
-- Least-privilege access.
-- No credentials or secrets in source code.
-- No unnecessary public IPs.
-- Backend services remain internal where possible.
-- Private AKS API endpoint where supported and compatible with subscription constraints.
-- Kubernetes resource requests and limits.
-- Readiness and liveness probes.
-- Consistent naming and labels.
-- Environment isolation through namespaces.
-- Infrastructure sized around actual Azure for Students quotas.
-- Avoid unnecessary enterprise complexity.
-- Phase 1 and Phase 2 remain clearly separated.
+**Application baseline complete; DevOps/AKS application deployment is next.**
+
+### Verified locally — 2026-09-15
+
+The AutoCare application has been built and committed to GitHub under `apps/autocare/`.
+
+Verified Development baseline:
+
+- React/Vite frontend loads at `/autocare/`.
+- Express API runs at `/api`.
+- Node.js API uses the Development in-memory repository by default.
+- FastAPI maintenance service runs locally and responds to health/analysis requests.
+- Express successfully calls the FastAPI maintenance-analysis endpoint over HTTP.
+- API test suite: **9 passed, 0 failed**.
+- Customer CRUD was verified.
+- Vehicle, service-center, service-type, and booking resource operations were verified.
+- Full customer → vehicle → service center → service type → booking flow was verified.
+- Maintenance-analysis flow through Express → FastAPI was verified.
+- Frontend Dashboard and Maintenance pages were verified against live API data.
+- Frontend production build passed.
+- `git diff --check` passed.
+- Azure SQL was **not** exercised in this local Development baseline.
+
+See `docs/APPLICATION_VERIFICATION.md` for the complete test/verification record and `apps/autocare/README.md` for application-level setup details.
+
+### Verified AKS baseline
+
+- Resource group: `rg-azure-aks`
+- AKS cluster: `aks-azure-project`
+- Region: `centralindia`
+- Kubernetes version: `1.35.7`
+- Two AKS nodes are `Ready`.
+- System pods, services, and deployments have been inspected and were running/available at verification time.
+- No application workloads or Kubernetes Ingress have yet been recorded as deployed.
+
+See `docs/AKS_VERIFIED_STATE.md` for the verified cluster state.
+
+### Next DevOps milestone
+
+**Validate the existing Development AKS environment, then containerize and deploy AutoCare to Development before designing the complete GitHub Actions CI/CD pipeline.**
+
+We will not claim QA, Production, Azure SQL, ACR, Ingress, Application Gateway, HTTPS, or CI/CD completion until each is directly verified.
 
 ## Subscription Constraints
 
@@ -149,24 +185,7 @@ Key documents:
 - `docs/AKS_VERIFIED_STATE.md` — verified AKS cluster, nodes, system pods, services, deployments, and Ingress state
 - `docs/AKS_NODE_RESOURCE_GROUP.md` — AKS node resource group concepts and project notes
 - `docs/AKS_RESOURCE_GROUPS_AND_MONITORING.md` — resource group and monitoring notes
-- `docs/SECURITY.md` — identity, access, secrets, exposure, and security decisions
 - `docs/INFRASTRUCTURE.md` — Azure resources, current infrastructure state, and configuration
-- `docs/TROUBLESHOOTING.md` — problems and solutions
+- `docs/INTEGRATIONS.md` — application and Azure integration notes
+- `docs/APPLICATION_VERIFICATION.md` — complete local application tests and verification evidence
 - `docs/CHANGELOG.md` — chronological project changes
-
-## Current Status
-
-**Phase 1 — Infrastructure validation / application deployment preparation**
-
-AKS infrastructure is provisioned and verified.
-
-Verified:
-
-- Resource group `rg-azure-aks` exists in Central India.
-- AKS cluster `aks-azure-project` is accessible through `kubectl`.
-- Kubernetes version is `1.35.7`.
-- Two AKS nodes are `Ready`.
-- AKS system pods, services, and deployments have been inspected and are running/available as recorded in `docs/AKS_VERIFIED_STATE.md`.
-- No Kubernetes Ingress resource is currently deployed.
-
-Application workloads, namespaces, Ingress, Application Gateway, HTTPS, database connectivity, and CI/CD remain separate project steps and will be documented only after verification.
