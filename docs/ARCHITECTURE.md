@@ -1,10 +1,33 @@
-# Phase 1 — Architecture
+# Architecture
 
 ## Architectural Goal
 
-Build a full-stack application on a single AKS cluster with three isolated Kubernetes namespaces (`dev`, `qa`, `prod`). The application is externally exposed through one Application Gateway and Kubernetes Ingress using path-based routing.
+Build and operate a full-stack AutoCare application on a single AKS cluster with environment isolation through Kubernetes namespaces. The application source remains a **single codebase**; environment differences are supplied through deployment configuration rather than duplicated application trees.
 
-## High-Level Architecture
+The target external architecture uses one Application Gateway and Kubernetes Ingress with path-based routing.
+
+## Application Architecture
+
+```text
+Browser
+  |
+  v
+React / Vite frontend
+  |
+  | HTTP / REST
+  v
+Node.js / Express API
+  |
+  +--------------------> Azure SQL Database (target runtime provider)
+  |
+  | HTTP
+  v
+Python / FastAPI maintenance service
+```
+
+For the current local Development baseline, the database boundary uses the in-memory repository and the maintenance service runs as a separate local HTTP process. Azure SQL is a planned runtime dependency and has not yet been validated for this application.
+
+## Target AKS Architecture
 
 ```text
                          Internet
@@ -38,48 +61,64 @@ Build a full-stack application on a single AKS cluster with three isolated Kuber
                        Azure SQL PaaS
 ```
 
+The diagram represents the target deployment architecture. It is not evidence that every target resource has already been deployed.
+
 ## Application Components
 
 ### Frontend
 
-- React
-- HTML
-- CSS
-- Served from a container.
-- Environment-specific application code/configuration for `dev`, `qa`, and `prod`.
+- React / Vite
+- HTML / CSS
+- Served from a container in AKS.
+- Uses a configurable API base URL.
+- Public application base is `/autocare/` in the current application.
 
-### Node.js Backend
+### Node.js API
 
-Primary REST/API and application business layer.
+The Express application provides the primary REST API and business layer.
 
-Responsibilities will include:
+Responsibilities include:
 
 - API endpoints
-- Application/business logic
-- Database operations where appropriate
-- Communication with the Python service where required
+- Validation and domain logic
+- Repository abstraction
+- Customer, vehicle, booking, service-center, and service-type operations
+- Maintenance-analysis orchestration
+- HTTP communication with the Python maintenance service
 
-### Python Backend
+### Python Maintenance Service
 
-A separate service with a clearly defined responsibility such as analytics, data processing, or another specialized operation. It should not exist only as a duplicate backend.
+FastAPI provides the specialized maintenance-analysis capability.
+
+The Node.js API calls this service over HTTP. The service returns a deterministic maintenance recommendation for the supplied vehicle/history input.
 
 ### Database
 
-Azure SQL Database (PaaS). SQL is managed by Azure and is not run as a database container in AKS.
+Azure SQL Database is the target managed relational database. SQL is not intended to run as a database container in AKS.
+
+The Node.js API contains a repository boundary with an in-memory implementation for Development/local work and an Azure SQL implementation for the SQL-backed runtime.
 
 ## Environment Model
 
-One AKS cluster contains three namespaces:
+One AKS cluster is intended to contain:
 
 ```text
-dev
-qa
-prod
+namespace: dev
+namespace: qa
+namespace: prod
 ```
 
-Each environment has its own application code as required by the project specification.
+There is **one source tree** for the application. The same tested container image should be promoted between environments where practical.
 
-Each namespace should contain only the resources belonging to that environment.
+Environment-specific values should be supplied through deployment configuration:
+
+- ConfigMaps for non-sensitive values.
+- Kubernetes Secrets and/or Azure Key Vault integration for sensitive values.
+- GitHub Actions environment variables/inputs for controlled promotion.
+
+Examples of values that may vary by environment include database endpoints, maintenance-service URLs, public base paths, replica counts, resource limits, and feature/configuration flags.
+
+QA and Production are therefore deployment environments, not separate application codebases.
 
 ## Service Exposure
 
@@ -88,6 +127,8 @@ Application services should normally use Kubernetes `ClusterIP` Services.
 No individual React, Node.js, or Python Service should receive a public IP unless a specific requirement makes it necessary.
 
 External traffic should enter through Application Gateway and then be routed through the Kubernetes Ingress layer.
+
+The Python maintenance service should remain internal to the cluster because it is called by the Node.js API rather than directly by browsers.
 
 ## Path-Based Routing
 
@@ -99,19 +140,20 @@ https://<domain>/qa/*
 https://<domain>/prod/*
 ```
 
-Within each environment:
+Within each environment, the intended public application paths are conceptually:
 
 ```text
 /<environment>/          -> React frontend
 /<environment>/api/      -> Node.js API
-/<environment>/python/   -> Python service
 ```
 
-The exact URL rewrite/strip-prefix behavior will be selected during implementation so that the applications remain environment-agnostic.
+The Python service is an internal service-to-service endpoint and does not need a public route.
+
+Exact URL rewrite/strip-prefix behavior will be selected during implementation so that the application can run from the same image in each namespace.
 
 ## Security Boundaries
 
-- AKS API server should be private.
+- AKS API server should be private where supported by the final design.
 - Application Gateway is the intended public entry point.
 - Backend Kubernetes Services should remain internal.
 - Secrets must never be committed to GitHub.
@@ -121,29 +163,55 @@ The exact URL rewrite/strip-prefix behavior will be selected during implementati
 
 ## Resource Strategy
 
-The project is constrained by an Azure for Students subscription. The initial AKS cluster should use the smallest viable node configuration that can run all required workloads.
+The project is constrained by an Azure for Students subscription. The initial cluster should use the smallest viable node configuration that can run the required workloads.
 
-The three environments should initially use one replica per workload unless testing demonstrates that more capacity is required.
+Start with one replica per application workload unless testing demonstrates that more capacity is required. Define CPU and memory requests/limits for workloads.
 
-Resource requests and limits will be defined for workloads to avoid uncontrolled resource consumption.
+## Deployment Strategy
 
-## Phase Separation
-
-Phase 1 is intentionally manual:
+Phase 1 establishes a manual Development deployment first:
 
 ```text
-Build -> Containerize -> Push to ACR -> Deploy to AKS -> Test
+Build -> Test -> Containerize -> Push to ACR -> Deploy to AKS dev -> Validate
 ```
 
-Phase 2 introduces GitHub Actions and automated deployment only after the infrastructure and application are proven to work.
+Phase 2 introduces GitHub Actions:
+
+```text
+GitHub
+  -> CI: install / test / build
+  -> build immutable container images
+  -> push images to ACR
+  -> deploy to dev
+  -> smoke test
+  -> controlled promotion to qa
+  -> controlled promotion to prod
+```
+
+The same application artifacts should be promoted rather than rebuilt differently for each environment.
+
+## Current Verified Boundary
+
+As of 2026-09-15:
+
+- The AutoCare source tree is committed under `apps/autocare/`.
+- The local Development application flow is verified.
+- The API test suite has 9 passing tests.
+- The frontend production build has passed.
+- AKS infrastructure is provisioned and verified.
+- No AutoCare application workload has yet been verified as deployed to AKS.
+- No Kubernetes Ingress for AutoCare has yet been verified.
+- Azure SQL application connectivity has not yet been verified.
+- GitHub Actions CI/CD has not yet been implemented.
 
 ## Architectural Decisions to Validate
 
-Before provisioning, confirm:
-
-- [ ] Private AKS is supported in the selected region/subscription.
-- [ ] Application Gateway and selected Kubernetes Ingress integration are supported.
-- [ ] The required Application Gateway tier is compatible with the project and Student subscription.
-- [ ] The selected AKS networking model fits the available IP quota.
-- [ ] Azure SQL networking can be implemented within the available subscription constraints.
-- [ ] Phase 2 runner connectivity to private AKS can be implemented without violating the Student resource limits.
+- [ ] Confirm the final AKS network configuration.
+- [ ] Confirm ACR availability and permissions.
+- [ ] Containerize and validate all three application components.
+- [ ] Deploy the Development namespace and verify service-to-service connectivity.
+- [ ] Validate Azure SQL connectivity from the deployed API.
+- [ ] Select and validate the Ingress/Application Gateway integration.
+- [ ] Validate HTTPS/SSL.
+- [ ] Determine the safest GitHub Actions runner/network model for private AKS.
+- [ ] Define promotion and approval controls for QA and Production.
