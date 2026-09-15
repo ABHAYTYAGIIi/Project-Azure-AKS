@@ -2,7 +2,7 @@
 
 ## Current State
 
-Azure infrastructure has now been provisioned and the AKS cluster has been successfully validated.
+Azure infrastructure has been provisioned and the AKS cluster has been successfully validated. The AutoCare application has separately completed its local Development verification and is now committed to GitHub. The application has **not yet been deployed to AKS**.
 
 ### Verified infrastructure state
 
@@ -13,7 +13,15 @@ Azure infrastructure has now been provisioned and the AKS cluster has been succe
 - Two AKS nodes are present and both are `Ready`.
 - `kubectl` access is configured and the active context is `aks-azure-project`.
 - AKS system pods, services, and deployments were successfully inspected.
-- No Kubernetes Ingress resource is currently deployed.
+- No Kubernetes Ingress resource is currently deployed for AutoCare.
+
+### Verified application state
+
+- AutoCare source is committed under `apps/autocare/`.
+- Local Development application flow is verified.
+- API test suite: **9 passed, 0 failed**.
+- Frontend production build: passed.
+- Application verification is recorded in `docs/APPLICATION_VERIFICATION.md`.
 
 Detailed verified AKS/Kubernetes state is maintained in `docs/AKS_VERIFIED_STATE.md`.
 
@@ -82,21 +90,27 @@ The diagram remains the target architecture. It should not be interpreted as pro
 
 ## Provisioning / Validation Order
 
-1. Inspect subscription quotas.
-2. Select region based on quotas and required service availability.
+1. Inspect subscription quotas. **Completed for the current baseline.**
+2. Select region based on quotas and required service availability. **Central India selected for the current baseline.**
 3. Finalize VNet/subnet/IP plan.
-4. Create Resource Group.
+4. Create Resource Group. **Completed.**
 5. Create VNet and required subnets.
-6. Create Azure Container Registry if required.
-7. Create AKS using the finalized networking plan.
+6. Create/verify Azure Container Registry.
+7. Create AKS using the finalized networking plan. **Completed.**
 8. Validate AKS connectivity and health. **Completed.**
-9. Create namespaces.
-10. Deploy application workloads.
-11. Configure Azure SQL connectivity.
-12. Configure Ingress.
-13. Configure Application Gateway integration.
-14. Configure HTTPS/SSL.
-15. Perform end-to-end tests.
+9. Validate the local application baseline. **Completed.**
+10. Containerize AutoCare frontend, API, and maintenance service.
+11. Build and validate container images locally.
+12. Push images to ACR.
+13. Create/verify the `dev` namespace.
+14. Deploy application workloads to AKS `dev`.
+15. Validate Kubernetes Service discovery and application health.
+16. Configure Azure SQL connectivity.
+17. Configure Ingress.
+18. Configure Application Gateway integration.
+19. Configure HTTPS/SSL.
+20. Perform end-to-end AKS tests.
+21. Implement GitHub Actions CI/CD and controlled environment promotion.
 
 ## Phase 1 Rule
 
