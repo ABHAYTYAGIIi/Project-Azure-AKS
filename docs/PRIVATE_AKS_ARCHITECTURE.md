@@ -2,38 +2,35 @@
 
 ## Status
 
-**Design baseline — provisioning not yet started.**
+**Phase 1 — infrastructure provisioned and validated.**
 
-This document is the source of truth for the new **private AKS architecture** for AutoCare. Azure resources will be provisioned through the **Azure Portal**. This document records the decisions, prerequisites, resource names, IP plan, DNS, private integrations, identity relationships, and validation checkpoints so the environment can be rebuilt without relying on undocumented portal choices.
+This document is the current architecture baseline for the private AKS environment. It supersedes the earlier design baseline that described VPN Gateway, Azure Private DNS Resolver, and Key Vault private endpoint as deferred. Those components are now part of the deployed Phase 1 architecture.
 
-> This document describes the new private architecture. It replaces the earlier public-API-server AKS direction.
+Azure resources were provisioned primarily through the Azure Portal and validated with Azure CLI and `kubectl`. Values that were not captured during validation are explicitly marked rather than guessed.
 
 ---
 
-## 1. Project constraints
+## 1. Project constraints and current state
 
-The project uses an Azure for Students subscription. The current project constraints are:
-
-| Constraint | Project limit / decision |
+| Item | Current value |
 |---|---|
 | Region | `centralindia` |
-| Resource group | `rg-azure-aks` |
-| Regional vCPU budget | **4 vCPUs** |
-| AKS system nodes | **2** |
-| AKS node size | `Standard_D2s_v6` |
-| AKS node vCPU | 2 per node |
-| AKS total node vCPU | **4 vCPUs** |
-| Public IPv4 budget | **3** |
-| Application Gateway public IP | **1 reserved** |
-| Other public IPs | Maximum 2 additional, only when required |
-| Cluster model | **Private AKS control plane** |
-| Container registry | **Private ACR** |
-| Database | Azure SQL Database through a private endpoint |
-| External application entry point | Azure Application Gateway |
-| Application Services | Internal Kubernetes `ClusterIP` services |
-| Environment model | One cluster, namespaces `dev`, `qa`, `prod` |
-
-Azure VM quota is regional and also constrained by VM-family quota, so the two `Standard_D2s_v6` nodes consume the full 4-vCPU project budget. Quota and capacity are separate checks and both must be verified in the Azure Portal before deployment. See Microsoft's quota guidance for the distinction between quota and actual regional capacity.
+| Primary resource group | `rg-azure-aks` |
+| VNet | `vnet-azure-project` |
+| AKS | `aks-azure-project` |
+| AKS model | **Private AKS control plane** |
+| AKS Kubernetes version observed | `v1.35.7` |
+| AKS nodes observed | 2, both `Ready` |
+| ACR | `acrazureproject.azurecr.io` |
+| Azure SQL logical server | `sql-azure-project` |
+| Key Vault | `kv-azure-aks-project` |
+| Application Gateway | `appgw-azure-project` |
+| Application Gateway tier | Standard V2 |
+| Application Gateway subnet | `snet-appgw` — `10.20.0.0/24` |
+| Ingress approach | Azure Application Gateway + Application Gateway Ingress Controller (AGIC) |
+| AGIC deployment | `ingress-appgw-deployment` |
+| AGIC namespace | `kube-system` |
+| AKS DNS service | `10.0.0.10` |
 
 ---
 
@@ -42,777 +39,879 @@ Azure VM quota is regional and also constrained by VM-family quota, so the two `
 ```text
                                       INTERNET
                                           |
-                                   HTTPS : 443
+                                          v
+                              Application Gateway
+                              appgw-azure-project
+                              Standard V2
                                           |
-                               [ Public IP #1 ]
+                              Public frontend IP
                                           |
-                         +-------------------------------+
-                         | Azure Application Gateway      |
-                         | Public L7 entry point         |
-                         | Subnet: snet-appgw            |
-                         +---------------+---------------+
-                                         |
-                                  private VNet traffic
-                                         |
-                         +---------------v---------------+
-                         | AKS Ingress / routing          |
-                         |                                |
-                         | +----------+  +----------+     |
-                         | | dev      |  | qa       | ... |
-                         | | namespace|  | namespace|     |
-                         | +----------+  +----------+     |
-                         +---------------+----------------+
-                                         |
-                         +---------------+----------------+
-                         |        AKS node subnet         |
-                         |        snet-aks                |
-                         |                                |
-                         |  Node 1  Standard_D2s_v6       |
-                         |  Node 2  Standard_D2s_v6       |
-                         |                                |
-                         |  React / Node / Python Pods    |
-                         +------+---------------+---------+
-                                |               |
-                       private  |               | private
-                       endpoint  |               | endpoint
-                                |               |
-                    +-----------v--+       +----v-------------+
-                    | Private ACR  |       | Azure SQL        |
-                    | Premium      |       | Database         |
-                    +--------------+       +------------------+
-                         |                         |
-                  PE + private DNS          PE + private DNS
-                         |                         |
-                         +----------- VNet --------+
+                              L7 listener / routing
+                                          |
+                                          v
+                             AGIC / Kubernetes Ingress
+                                          |
+                                  Kubernetes Service
+                                          |
+                                          v
+                                         PODS
+                                          |
+              +---------------------------+--------------------------+
+              |                           |                          |
+              v                           v                          v
+        Private ACR                 Azure SQL                  Azure Key Vault
+        acrazureproject             sql-azure-project          kv-azure-aks-project
+              |                           |                          |
+        Private Endpoint             Private Endpoint           Private Endpoint
+              |                           |                          |
+             NIC                         NIC                        NIC
+              |                           |                          |
+              +---------------------------+--------------------------+
+                                          |
+                                    Private DNS
+                                          |
+                              Azure Private DNS Resolver
+                                          |
+                              vnet-azure-project
+                                          |
+             +----------------------------+--------------------------+
+             |                                                       |
+             v                                                       v
+       Private AKS API                                          AKS nodes
+             |                                                       |
+             |                                                   VMSS / LB
+             |                                                       |
+       kube-apiserver                                         AKS managed RG
 
-AKS API server:
+ADMINISTRATOR PATH
 
-  Developer / CI runner
-          |
-          | private connectivity / AKS Run Command
-          v
-  Private AKS API endpoint
-          |
-          v
-  AKS control plane
+Developer PC
+    |
+    | Point-to-Site VPN
+    v
+VPN Gateway
+    |
+    v
+Azure VNet / private DNS
+    |
+    v
+Private AKS API endpoint
+    |
+    v
+kubectl
 ```
 
-The Application Gateway is the only planned Internet-facing application entry point. The AKS API server is private and has no public API endpoint.
+The architecture intentionally has two different traffic roles:
+
+1. **Private administrative/control-plane path:** PC -> P2S VPN -> private AKS API.
+2. **Public application entry path:** Internet -> Application Gateway -> AGIC -> Kubernetes Services -> Pods.
+
+The Azure Load Balancer associated with AKS worker infrastructure remains a separate L4 infrastructure component. It is not replaced by Application Gateway.
 
 ---
 
-## 3. Why the cluster is private
+## 3. Resource-group model
 
-A private AKS cluster places the Kubernetes API server behind private networking. The API server uses private IP addressing and communication between the API server and node pools remains on private networking.
+Azure resources associated with AKS do not all live in the project's primary resource group.
 
-This is different from making the application private:
+### 3.1 Primary project resource group
 
-- **Private AKS** protects the Kubernetes control plane endpoint.
-- **Private ACR** keeps container image access on the VNet/private-link path.
-- **Private SQL endpoint** keeps database traffic on private networking.
-- **Application Gateway public frontend** is intentionally public because users need to reach the AutoCare application.
+```text
+rg-azure-aks
+```
 
-Microsoft documents that a private AKS cluster uses an API-server private endpoint and private DNS, and that the private endpoint is placed in the subnet used by the first node pool when using the private-link-based model.
+Contains the project's main resources, including the VNet, private networking components, PaaS services/private endpoints as configured, and Application Gateway.
 
-Reference: https://learn.microsoft.com/en-us/azure/aks/private-clusters
+### 3.2 AKS-managed node/infrastructure resource group
 
----
+AKS automatically creates a separate resource group with a name similar to:
 
-## 4. Resource naming standard
+```text
+MC_rg-azure-aks_aks-azure-project_centralindia_...
+```
 
-Names below are the planned names. Azure services with globally unique naming requirements may use a generated suffix.
+This managed resource group contains infrastructure required by the AKS node/data plane, such as:
 
-### Core resources
+- VM Scale Set / worker-node instances
+- Node NICs
+- Managed disks
+- Azure Load Balancer
+- Related public IP and network resources where applicable
+- Other AKS-managed infrastructure
 
-| Resource | Planned name |
-|---|---|
-| Resource group | `rg-azure-aks` |
-| VNet | `vnet-azure-project` |
-| AKS | `aks-azure-project` |
-| AKS node subnet | `snet-aks` |
-| Application Gateway subnet | `snet-appgw` |
-| Private endpoint subnet | `snet-private-endpoints` |
-| Application Gateway | `appgw-autocare` |
-| Application Gateway public IP | `pip-appgw-autocare` |
-| ACR | `<globally-unique-acr-name>` |
-| ACR private endpoint | `pe-acr-autocare` |
-| SQL server | `<globally-unique-sql-server-name>` |
-| SQL database | `autocare` |
-| SQL private endpoint | `pe-sql-autocare` |
+This is expected Azure AKS behavior. The `MC_...` resource group is not a second Kubernetes cluster; it is the Azure infrastructure layer managed by AKS.
 
-### Kubernetes names
+### 3.3 Monitoring resource groups
 
-| Resource | Planned name |
-|---|---|
-| Development namespace | `dev` |
-| QA namespace | `qa` |
-| Production namespace | `prod` |
-| Frontend service | `frontend` |
-| API service | `api` |
-| Maintenance service | `maintenance-service` |
+Azure Monitor also creates/supports managed resource groups for monitoring resources. The environment observed components such as:
 
-Do not place passwords, connection strings, tokens, or other secrets in resource names or this document.
+- Azure Monitor Agent / Container Insights components
+- Managed Prometheus metrics components
+- Data Collection Rules / endpoints
+- Log Analytics resources
+
+These managed resource groups are separate from the project's primary resource group and should not be treated as application resource groups.
 
 ---
 
-## 5. VNet and IP plan
+## 4. VNet and subnet architecture
 
 ### VNet
 
 ```text
-VNet: vnet-azure-project
-CIDR: 10.20.0.0/16
+vnet-azure-project
 ```
 
-### Subnets
+The VNet is the private network boundary for the project.
 
-| Subnet | CIDR | Purpose |
-|---|---|---|
-| `snet-aks` | `10.20.0.0/20` | AKS nodes; private AKS API private endpoint is expected here for the private-link-based model |
-| `snet-appgw` | `10.20.16.0/24` | Application Gateway only |
-| `snet-private-endpoints` | `10.20.17.0/24` | ACR and Azure SQL private endpoints |
+The exact VNet CIDR was not re-captured during the final validation session and is therefore not restated here as a verified value.
 
-The remaining VNet address space is intentionally unallocated for future needs.
+### Confirmed subnet
 
-### Kubernetes networking
+| Subnet | CIDR | Purpose | NSG / delegation observed |
+|---|---|---|---|
+| `snet-appgw` | `10.20.0.0/24` | Dedicated Application Gateway subnet | No NSG; no delegation observed |
 
-Target AKS networking remains:
+### Private endpoint subnet
+
+The Azure Portal shows the subnet used for private endpoint deployment as:
 
 ```text
-Network plugin: Azure CNI
-Network mode:   Overlay
-Service CIDR:   10.0.0.0/16
-DNS service IP: 10.0.0.10
-Pod CIDR:       10.244.0.0/16
+PrivateEndpointSubnet
 ```
 
-Azure CNI Overlay keeps Pod IP allocation separate from the Azure VNet address space, conserving VNet addresses for nodes, gateways, private endpoints, and other Azure resources.
+Its exact CIDR was not captured in the final validation output.
 
-Reference: https://learn.microsoft.com/en-us/azure/aks/azure-cni-overlay
+### AKS/node subnet
 
-> These values are the planned baseline. The Azure Portal's final validation must be checked before creating the cluster.
+The AKS node subnet exists in the VNet. Its exact final name and CIDR were not captured in the final validation output and are intentionally not guessed here.
+
+### Important subnet rule
+
+`snet-appgw` is dedicated to Application Gateway. AKS nodes and private endpoints should not be placed into that Application Gateway subnet.
 
 ---
 
-## 6. Public IP budget
+## 5. Point-to-Site VPN architecture
 
-The project has a **3-public-IP budget**.
-
-### Planned allocation
+The administrator access model uses an **Azure VPN Gateway with Point-to-Site (P2S) configuration**.
 
 ```text
-Public IP #1 -> Application Gateway frontend
-Public IP #2 -> AKS outbound connectivity if the selected outbound mode requires it
-Public IP #3 -> RESERVED
+Administrator PC
+      |
+      | VPN client / P2S
+      v
+Azure VPN Gateway
+      |
+      v
+vnet-azure-project
+      |
+      +--> Private AKS API
+      +--> Private DNS / Resolver
+      +--> Private Azure resources
 ```
 
-We do not create the third public IP just because it is available.
+This VPN is important because the AKS API server is private.
 
-### Important distinction
+### Observed behavior
 
-A private AKS control plane does **not** mean the nodes cannot have outbound Internet connectivity. Application traffic and control-plane access are private, while node egress can still use an Azure-managed outbound path.
+When the VPN automatically disconnected, this command failed:
 
-The final AKS outbound configuration must be checked during portal creation. If AKS uses a Standard Load Balancer outbound configuration, Azure may create/use a public outbound IP. That IP is part of the subscription's public-IP budget.
+```powershell
+kubectl get no
+```
 
-Application Gateway itself needs one public frontend IP when it is the Internet-facing entry point.
+with a DNS error for the private AKS API hostname.
 
-Microsoft confirms that Application Gateway v2 can use a public frontend IP and route to private backend addresses.
+After the VPN was reconnected, `kubectl` access returned to normal and the nodes were visible as `Ready`.
 
-Reference: https://learn.microsoft.com/en-us/azure/application-gateway/configuration-frontend-ip
+This provides practical validation that the administrator path is dependent on the private network/VPN path rather than a public AKS API endpoint.
+
+The exact VPN Gateway resource name, SKU, public IP and GatewaySubnet CIDR were not captured in the final validation output.
 
 ---
 
-## 7. Private DNS architecture
+## 6. Private AKS control plane
 
-DNS is a first-class part of this architecture. A private endpoint without correct DNS resolution is not a complete private integration.
-
-### 7.1 AKS private API DNS
-
-For the initial design, use the **AKS-managed private DNS zone** created as part of private-cluster creation rather than introducing a custom DNS server or custom AKS private DNS zone.
-
-This keeps the design simpler and avoids unnecessary custom DNS identity/role configuration.
-
-AKS creates the private endpoint and private DNS zone for the private API server by default in the cluster-managed resource group. The zone is linked to the VNet hosting the cluster.
-
-Do not manually delete or modify the AKS-managed private DNS resources.
-
-Reference: https://learn.microsoft.com/en-us/azure/aks/private-clusters
-
-### 7.2 ACR private DNS
-
-Create:
+The cluster is:
 
 ```text
-Private DNS zone:
+aks-azure-project
+```
+
+and uses a **private AKS control plane**.
+
+The private API server is exposed through the AKS private endpoint/private DNS architecture rather than a public Kubernetes API endpoint.
+
+### Observed node state
+
+```text
+aks-agentpool-13605033-vmss000000   Ready   v1.35.7
+aks-agentpool-13605033-vmss000001   Ready   v1.35.7
+```
+
+### Kubernetes DNS
+
+Pods queried:
+
+```text
+10.0.0.10
+```
+
+for cluster DNS resolution.
+
+The private AKS API FQDN observed during the project resolves through the private DNS path when the administrator is connected to the private network.
+
+---
+
+## 7. Azure Private DNS Resolver
+
+Azure Private DNS Resolver is part of the deployed Phase 1 architecture.
+
+Its purpose is to provide private DNS resolution between the VNet, private endpoints, Azure services, and connected clients/workloads.
+
+The important flow is:
+
+```text
+AKS Pod / private client
+        |
+        v
+DNS resolution
+        |
+        v
+Private DNS Resolver / Azure DNS path
+        |
+        v
+Private DNS zone
+        |
+        v
+Private endpoint IP
+```
+
+The exact Private DNS Resolver resource name, inbound/outbound endpoint names, and endpoint IP addresses were not captured in the final validation output.
+
+The resolver is nevertheless operationally confirmed by the successful private DNS lookups from an AKS Pod described below.
+
+---
+
+## 8. Private DNS zones
+
+The architecture uses Azure Private DNS zones for Private Link services.
+
+### ACR
+
+```text
 privatelink.azurecr.io
 ```
 
-Link it to:
+### Azure SQL
 
 ```text
-vnet-azure-project
-```
-
-The private endpoint creates private DNS records so that the normal ACR hostname resolves to the private endpoint rather than requiring a public route.
-
-For the private ACR architecture, the registry REST endpoint and regional data endpoint records must resolve correctly. Microsoft documents the ACR private DNS records and private endpoint model for network-isolated/private ACR scenarios.
-
-Reference: https://learn.microsoft.com/en-us/azure/aks/network-isolated
-
-### 7.3 Azure SQL private DNS
-
-Create:
-
-```text
-Private DNS zone:
 privatelink.database.windows.net
 ```
-
-Link it to:
-
-```text
-vnet-azure-project
-```
-
-The application must continue using the normal SQL server FQDN:
-
-```text
-<sql-server-name>.database.windows.net
-```
-
-Do **not** replace the SQL hostname in the application with the private-link hostname. Azure SQL's documented behavior requires the normal `database.windows.net` FQDN for client connections while DNS resolves it privately.
-
-Reference: https://learn.microsoft.com/en-us/azure/azure-sql/database/private-endpoint-overview
-
----
-
-## 8. Private ACR architecture
-
-### ACR requirements
-
-The registry must support Private Link. Azure Container Registry private endpoints require the **Premium** ACR SKU.
-
-Planned model:
-
-```text
-AKS node
-   |
-   | DNS: <registry>.azurecr.io
-   v
-Private DNS: privatelink.azurecr.io
-   |
-   v
-Private endpoint
-   |
-   v
-ACR Premium
-```
-
-### ACR configuration
-
-| Setting | Target |
-|---|---|
-| SKU | Premium |
-| Public network access | Disabled after private connectivity is validated |
-| Private endpoint | `pe-acr-autocare` |
-| PE subnet | `snet-private-endpoints` |
-| Private DNS | `privatelink.azurecr.io` |
-| VNet link | `vnet-azure-project` |
-| Authentication | AKS kubelet managed identity with `AcrPull` |
-
-### AKS-to-ACR identity
-
-The AKS kubelet identity should receive only the required `AcrPull` role on the ACR resource.
-
-Conceptually:
-
-```text
-AKS kubelet managed identity
-             |
-             | AcrPull
-             v
-        Private ACR
-```
-
-No registry password should be stored in Kubernetes for normal AKS image pulls when managed identity integration is available.
-
-Reference: https://learn.microsoft.com/en-us/azure/aks/cluster-container-registry-integration
-
----
-
-## 9. Azure SQL private architecture
-
-Azure SQL remains a PaaS service. We do not run SQL Server inside AKS.
-
-Target path:
-
-```text
-Node.js API Pod
-     |
-     | <sql-server>.database.windows.net:1433
-     v
-Azure DNS resolution
-     |
-     v
-privatelink.database.windows.net
-     |
-     v
-SQL Private Endpoint
-     |
-     v
-Azure SQL logical server / database
-```
-
-### SQL configuration
-
-| Setting | Target |
-|---|---|
-| SQL server | `<globally-unique-sql-server-name>` |
-| Database | `autocare` |
-| Private endpoint | `pe-sql-autocare` |
-| PE subnet | `snet-private-endpoints` |
-| Private DNS | `privatelink.database.windows.net` |
-| Public network access | Disabled after private connectivity is validated |
-
-Azure's portal workflow for SQL private endpoints explicitly supports private DNS integration and recommends the `privatelink.database.windows.net` zone. Public network access is a separate setting and must be disabled if the goal is private-only SQL access.
-
-Reference: https://learn.microsoft.com/en-us/azure/private-link/tutorial-private-endpoint-sql-portal
-
----
-
-## 10. Application Gateway architecture
-
-Application Gateway is the **only planned public application entry point**.
-
-```text
-Internet
-   |
-   | HTTPS
-   v
-Public IP #1
-   |
-Application Gateway
-   |
-   | private VNet traffic
-   v
-AKS ingress / services
-```
-
-### Application Gateway subnet
-
-```text
-snet-appgw
-10.20.16.0/24
-```
-
-This subnet is dedicated to Application Gateway and should not contain AKS nodes or private endpoints.
-
-### Application routing
-
-The target external paths remain:
-
-```text
-https://<domain>/dev/*
-https://<domain>/qa/*
-https://<domain>/prod/*
-```
-
-Within each namespace:
-
-```text
-/<environment>/        -> React frontend
-/<environment>/api/*   -> Node.js API
-```
-
-The Python maintenance service remains internal and is called by the Node.js API.
-
-Application Gateway/AGIC can route to private backend addresses and can share one public IP across multiple HTTP/HTTPS routes. Microsoft recommends Application Gateway for HTTP-like application ingress patterns where a shared L7 entry point is required.
-
-References:
-
-- https://learn.microsoft.com/en-us/azure/application-gateway/ingress-controller-overview
-- https://learn.microsoft.com/en-us/azure/aks/plan-application-networking
-
----
-
-## 11. AKS control-plane access
-
-A private cluster changes how administration works.
-
-The laptop cannot simply reach the Kubernetes API over the public Internet because the API endpoint is private.
-
-### Initial management strategy
-
-Use **Azure Portal → AKS → Run command** for cluster administration when direct private network access is not available.
-
-Microsoft documents AKS Run Command/command invoke specifically for private clusters and notes that it can run `kubectl` and `helm` commands through the Azure API without requiring a VPN or ExpressRoute path from the administrator's machine.
-
-Reference: https://learn.microsoft.com/en-us/azure/aks/access-private-cluster
-
-### Future CI/CD strategy
-
-The GitHub Actions runner must have private network access to the AKS API if it performs direct Kubernetes operations.
-
-The project should therefore use a **self-hosted GitHub Actions runner inside the AKS/VNet environment** or another connected execution environment rather than assuming a GitHub-hosted runner can directly reach the private API.
-
-Because the project has only 4 regional vCPUs and those are consumed by the two AKS nodes, adding a separate VM runner is not part of the initial architecture. A runner-as-a-workload inside AKS can be evaluated later without adding another VM.
-
----
-
-## 12. Secrets and configuration
-
-### ConfigMaps
-
-Use ConfigMaps for non-sensitive values such as:
-
-- environment name
-- internal service names
-- application feature flags
-- non-secret API configuration
-- public path/base-path configuration
-
-### Secrets
-
-Use Kubernetes Secrets and/or Azure Key Vault integration for:
-
-- SQL credentials if SQL authentication is used
-- application secrets
-- certificates/private keys
-- tokens
-
-Never commit actual secret values to GitHub.
 
 ### Key Vault
-
-Azure Key Vault with a private endpoint is a possible future integration if we decide to move sensitive runtime values out of Kubernetes Secrets. It is **not a mandatory prerequisite for the first private AKS deployment**.
-
-If introduced, the additional private DNS zone would be:
 
 ```text
 privatelink.vaultcore.azure.net
 ```
 
----
+### AKS private API
 
-## 13. Managed identities and permissions
+The private AKS API also uses its private DNS architecture. The exact AKS-managed zone name is intentionally not hard-coded here because it is generated/managed by AKS.
 
-The architecture should use managed identities instead of long-lived Azure credentials wherever possible.
+### DNS design principle
 
-Expected identity relationships:
+Applications continue to use the normal Azure service hostname. DNS maps that hostname through the Private Link namespace to a private IP.
 
-```text
-AKS control-plane identity
-    |
-    +--> required network/private DNS permissions during cluster setup
-
-AKS kubelet identity
-    |
-    +--> AcrPull on ACR
-
-Application workload identity (future, if needed)
-    |
-    +--> narrowly scoped Azure resource permissions
-```
-
-Do not give the AKS kubelet identity broad Owner/Contributor access to the subscription.
-
-If a custom private DNS zone is selected later instead of the AKS-managed default, the required identity and Private DNS Zone Contributor/Network Contributor permissions must be explicitly planned. For the initial build we avoid that additional complexity by using the AKS-managed private DNS zone.
-
----
-
-## 14. Required integrations
-
-| Integration | Private? | Required now? | Mechanism |
-|---|---:|---:|---|
-| AKS API server | Yes | Yes | Private AKS + private DNS |
-| AKS → ACR | Yes | Yes | ACR Premium + Private Endpoint + `AcrPull` |
-| API → Azure SQL | Yes | Yes | SQL Private Endpoint + private DNS |
-| Internet → application | No | Yes | Application Gateway public IP |
-| Application Gateway → AKS | Yes | Yes | VNet/private backend routing |
-| Node egress → Azure/Internet | Outbound path | Yes | AKS outbound configuration |
-| AKS → Key Vault | Not initially | No | Future private endpoint/workload identity |
-| GitHub Actions → AKS | Private | Phase 2 | Self-hosted runner / connected execution environment |
-
----
-
-## 15. Provisioning order in Azure Portal
-
-The order matters because several resources depend on networking or identity.
-
-### Phase A — subscription and quota validation
-
-1. Confirm subscription is Azure for Students.
-2. Confirm `centralindia` is available.
-3. Confirm total regional vCPU quota is at least 4.
-4. Confirm the relevant D-series family quota permits two `Standard_D2s_v6` nodes.
-5. Confirm public IPv4 quota has room for the planned Application Gateway and AKS outbound IP.
-6. Confirm ACR Premium and required AKS/Application Gateway features are available to the subscription.
-
-### Phase B — network foundation
-
-Create:
-
-1. `vnet-azure-project`
-2. `snet-aks`
-3. `snet-appgw`
-4. `snet-private-endpoints`
-
-### Phase C — private ACR
-
-1. Create Premium ACR.
-2. Create ACR private endpoint in `snet-private-endpoints`.
-3. Create/link `privatelink.azurecr.io`.
-4. Verify private DNS resolution.
-5. Configure AKS kubelet identity integration/`AcrPull` after the AKS identity exists.
-6. Disable public ACR access only after private connectivity is proven.
-
-### Phase D — private AKS
-
-Create AKS with:
-
-- private cluster enabled
-- Azure CNI Overlay
-- BYO VNet/subnet
-- 2-node system pool
-- `Standard_D2s_v6`
-- standard load balancer/outbound configuration compatible with the public-IP budget
-- AKS-managed private DNS initially
-- managed identity
-- Azure RBAC as appropriate
-
-Do not change networking choices casually after cluster creation. Some AKS networking and private DNS choices are architectural decisions rather than simple application settings.
-
-### Phase E — Azure SQL
-
-1. Create Azure SQL logical server/database.
-2. Create SQL private endpoint.
-3. Link `privatelink.database.windows.net` to the VNet.
-4. Verify private DNS resolution.
-5. Disable public network access after private connectivity is validated.
-6. Store SQL credentials/configuration securely.
-
-### Phase F — Application Gateway
-
-1. Create one public IP.
-2. Create Application Gateway in `snet-appgw`.
-3. Configure HTTPS listener/certificate.
-4. Connect it to the AKS ingress model.
-5. Configure path-based routing.
-6. Keep backend Kubernetes services internal.
-
-### Phase G — Kubernetes application
-
-Create namespaces:
+For example:
 
 ```text
-kubectl create namespace dev
-kubectl create namespace qa
-kubectl create namespace prod
+sql-azure-project.database.windows.net
+        |
+        v
+sql-azure-project.privatelink.database.windows.net
+        |
+        v
+10.20.2.6
 ```
-
-Then deploy the application to `dev` first:
-
-```text
-ConfigMap
-Secrets
-Frontend Deployment + Service
-API Deployment + Service
-Maintenance Deployment + Service
-Ingress
-```
-
-QA and Production are promotion targets and should not be populated until Development is stable.
 
 ---
 
-## 16. Validation checklist
+## 9. Private Endpoint architecture
 
-### Network
+Private Endpoints provide the private network attachment from the VNet to Azure PaaS services.
 
-- [ ] VNet exists with the planned CIDR.
-- [ ] AKS subnet exists.
-- [ ] Application Gateway subnet exists.
-- [ ] Private endpoint subnet exists.
-- [ ] No unexpected public IPs were created.
+Conceptually:
 
-### Private AKS
+```text
+Azure PaaS service
+       |
+       v
+Private Endpoint
+       |
+       v
+Private Endpoint NIC
+       |
+       v
+Private IP in VNet
+       |
+       v
+Private DNS record
+```
 
-- [ ] `enablePrivateCluster` is true.
-- [ ] API server has private addressing.
-- [ ] Private DNS zone exists and is linked correctly.
-- [ ] Cluster can be administered through Azure Portal Run Command.
-- [ ] Two nodes are `Ready`.
+Phase 1 uses this pattern for:
 
-### ACR
+- Azure Container Registry
+- Azure SQL
+- Azure Key Vault
 
-- [ ] ACR SKU is Premium.
-- [ ] Private endpoint is approved/connected.
-- [ ] `privatelink.azurecr.io` is linked to the VNet.
-- [ ] Registry FQDN resolves to private IP from the cluster.
-- [ ] Kubelet identity has `AcrPull`.
-- [ ] AKS can pull the AutoCare images.
-- [ ] Public ACR access is disabled after validation.
+The exact generated Private Endpoint and NIC resource names are not repeated where they were not captured in the final CLI output.
 
-### SQL
+---
 
-- [ ] SQL private endpoint is connected.
-- [ ] `privatelink.database.windows.net` is linked to the VNet.
-- [ ] `<server>.database.windows.net` resolves privately from the cluster.
-- [ ] API can connect to SQL over the private endpoint.
-- [ ] Public SQL network access is disabled after validation.
+## 10. Azure Container Registry
+
+### Resource
+
+```text
+acrazureproject
+acrazureproject.azurecr.io
+```
+
+The registry is integrated privately with AKS.
+
+### Architecture
+
+```text
+AKS kubelet
+    |
+    | image pull
+    v
+acrazureproject.azurecr.io
+    |
+    v
+privatelink.azurecr.io
+    |
+    v
+ACR Private Endpoint
+    |
+    v
+ACR
+```
+
+### Actual validation
+
+A small `hello-world` image was pulled from Docker Hub on the administrator PC, tagged/pushed to ACR, and then deployed from:
+
+```text
+acrazureproject.azurecr.io/hello-world:latest
+```
+
+The AKS node successfully reported:
+
+```text
+Successfully pulled image
+```
+
+This is stronger validation than a DNS-only test: the Kubernetes node actually retrieved the image from the private ACR path.
+
+---
+
+## 11. Azure SQL private integration
+
+### Resource
+
+```text
+sql-azure-project
+```
+
+### DNS
+
+From an AKS Pod:
+
+```text
+sql-azure-project.database.windows.net
+    -> sql-azure-project.privatelink.database.windows.net
+    -> 10.20.2.6
+```
+
+### Network validation
+
+The following test succeeded from the AKS Pod:
+
+```powershell
+kubectl exec -it network-test -- nc -vz sql-azure-project.database.windows.net 1433
+```
+
+Result:
+
+```text
+Connection to sql-azure-project.database.windows.net (10.20.2.6)
+1433 port [tcp/ms-sql-s] succeeded!
+```
+
+This validates private DNS and TCP network reachability to SQL.
+
+It does not by itself validate SQL credentials, TLS configuration, database permissions, or application queries.
+
+---
+
+## 12. Azure Key Vault private integration
+
+### Resource
+
+```text
+kv-azure-aks-project
+```
+
+### Confirmed configuration
+
+```text
+Region: Central India
+Pricing tier: Standard
+Public network access: Disabled
+Permission model: Azure role-based access control
+Connectivity: Private endpoint
+```
+
+### Private DNS
+
+From an AKS Pod:
+
+```text
+kv-azure-aks-project.vault.azure.net
+    -> kv-azure-aks-project.privatelink.vaultcore.azure.net
+    -> 10.20.2.7
+```
+
+The Private DNS zone is:
+
+```text
+privatelink.vaultcore.azure.net
+```
+
+The private DNS zone was created successfully and a VNet link was observed provisioning for `vnet-azure-project`.
+
+### Phase 1 conclusion
+
+Key Vault is not a future/deferred component anymore. The **Key Vault Private Endpoint and private DNS integration are part of the actual Phase 1 architecture**.
+
+A future workload-identity test can validate that an application Pod is authorized to read a specific secret. That is an authorization/application test, separate from the network validation already performed.
+
+---
+
+## 13. Application Gateway
+
+### Resource
+
+```text
+appgw-azure-project
+```
+
+### Confirmed properties
+
+| Property | Value |
+|---|---|
+| Tier | Standard V2 |
+| VNet | `vnet-azure-project` |
+| Subnet | `snet-appgw` |
+| Subnet CIDR | `10.20.0.0/24` |
+| Public frontend IP observed | `4.247.238.128` |
+
+Application Gateway is the intended **public L7 application entry point**.
+
+```text
+Internet
+   |
+   v
+Public IP
+   |
+   v
+Application Gateway
+   |
+   v
+AGIC / Ingress
+   |
+   v
+Kubernetes Service
+   |
+   v
+Pod
+```
+
+The Application Gateway lives in the project's VNet/subnet, while Azure may place the gateway's managed supporting resources into the AKS/application infrastructure resource group model. Resource-group placement does not change the VNet relationship.
+
+---
+
+## 14. Application Gateway Ingress Controller (AGIC)
+
+The project uses the **Application Gateway + Kubernetes Ingress Controller approach**.
+
+It does **not** introduce a new Gateway API architecture.
+
+The Kubernetes-side deployment observed is:
+
+```text
+Namespace: kube-system
+Deployment: ingress-appgw-deployment
+```
+
+The controller connects Kubernetes Ingress definitions with Azure Application Gateway configuration.
+
+Conceptually:
+
+```text
+Kubernetes Ingress object
+          |
+          v
+       AGIC
+          |
+          v
+Application Gateway configuration
+          |
+          v
+Listener / routing / backend
+```
+
+The Application Gateway is therefore an Azure resource, while AGIC is the Kubernetes controller that reconciles Kubernetes ingress configuration with that Azure resource.
+
+---
+
+## 15. Azure Load Balancer vs Application Gateway
+
+These are not the same component and both can exist in the architecture.
+
+### Azure Load Balancer
+
+The AKS-managed Load Balancer is part of the node/data-plane infrastructure in the `MC_...` resource group.
+
+It provides L4 network load-balancing functionality for AKS infrastructure and Kubernetes services that require it.
 
 ### Application Gateway
 
-- [ ] Exactly one planned public IP is used by Application Gateway.
-- [ ] HTTPS listener works.
-- [ ] Gateway can reach private AKS backends.
-- [ ] `/dev/*` routes correctly.
-- [ ] `/dev/api/*` routes correctly.
-- [ ] Python maintenance service is not publicly exposed.
+Application Gateway is the dedicated L7 HTTP/HTTPS application ingress layer.
 
-### Application
+It provides capabilities such as:
 
-- [ ] Frontend loads.
-- [ ] API health endpoint works.
-- [ ] Customer CRUD works.
-- [ ] Vehicle operations work.
-- [ ] Maintenance analysis works.
-- [ ] API → maintenance service works internally.
-- [ ] API → SQL works privately.
+- HTTP/HTTPS listeners
+- Host/path routing
+- TLS termination
+- Web application routing
+- Backend health probing
+- Integration with AGIC
 
----
-
-## 17. Failure modes to avoid
-
-### Failure: private AKS created but nobody can run kubectl
-
-Cause: administrator machine has no private network path.
-
-Mitigation: use Azure Portal Run Command initially; later provide a connected/self-hosted runner.
-
-### Failure: ACR is private but image pulls fail
-
-Check:
-
-1. ACR is Premium.
-2. Private endpoint is connected.
-3. Private DNS zone exists and is linked to the VNet.
-4. Registry/data endpoint DNS records resolve privately.
-5. Kubelet identity has `AcrPull`.
-6. Public access was not disabled before private connectivity was verified.
-
-### Failure: SQL private endpoint exists but API cannot connect
-
-Check DNS first. The application should use the normal `<server>.database.windows.net` hostname, which should resolve to the private endpoint through the private DNS zone.
-
-### Failure: unexpected public IP consumption
-
-Inspect:
-
-- Application Gateway frontend IP.
-- AKS outbound configuration.
-- Any Kubernetes `LoadBalancer` Services.
-- Any future Bastion/VPN/NAT design.
-
-Never create a public `LoadBalancer` Service for React/API/maintenance just to make an application reachable. Application Gateway is the intended external entry point.
-
-### Failure: student quota exceeded
-
-Check both:
-
-- Total regional vCPU quota.
-- VM-family quota for the selected node size.
-
-Do not add a VM-based CI runner while the AKS node pool consumes the full 4-vCPU budget.
-
----
-
-## 18. What is deliberately NOT part of the first build
-
-The following are intentionally deferred:
-
-- Azure Firewall
-- VPN Gateway
-- ExpressRoute
-- Hub/spoke topology
-- Azure Private DNS Resolver
-- Dedicated management VM
-- Dedicated VM-based GitHub Actions runner
-- Key Vault private endpoint
-- Multi-region ACR
-- ACR geo-replication
-- Separate AKS clusters for QA/Production
-- Network-isolated AKS outbound `none`/`block` architecture
-
-These features can be added later if a requirement justifies their cost, quota, or operational complexity.
-
----
-
-## 19. Final target architecture
+Therefore:
 
 ```text
-                         ┌───────────────────────────┐
-                         │         Internet          │
-                         └─────────────┬─────────────┘
-                                       │
-                                 HTTPS / 443
-                                       │
-                              [Public IP #1]
-                                       │
-                         ┌─────────────▼─────────────┐
-                         │   Application Gateway     │
-                         │   snet-appgw              │
-                         └─────────────┬─────────────┘
-                                       │ private
-                                       │
-                    ┌──────────────────▼──────────────────┐
-                    │             Azure VNet              │
-                    │          10.20.0.0/16                │
-                    │                                     │
-                    │  ┌───────────────────────────────┐  │
-                    │  │ snet-aks 10.20.0.0/20         │  │
-                    │  │                               │  │
-                    │  │ AKS private control plane     │  │
-                    │  │ Node 1: D2s_v6               │  │
-                    │  │ Node 2: D2s_v6               │  │
-                    │  │                               │  │
-                    │  │ dev / qa / prod              │  │
-                    │  │ React / API / Python         │  │
-                    │  └───────────────┬───────────────┘  │
-                    │                  │                  │
-                    │  ┌──────────────▼───────────────┐  │
-                    │  │ snet-private-endpoints      │  │
-                    │  │ 10.20.17.0/24                │  │
-                    │  │                               │  │
-                    │  │ PE -> Private ACR            │  │
-                    │  │ PE -> Azure SQL              │  │
-                    │  └───────────────────────────────┘  │
-                    │                                     │
-                    └─────────────────────────────────────┘
-
-Private DNS:
-  AKS-managed private zone
-  privatelink.azurecr.io
-  privatelink.database.windows.net
-
-Public IP budget:
-  #1 Application Gateway
-  #2 AKS outbound (if required by selected outbound mode)
-  #3 reserved
+AKS infrastructure LB  = L4 / Azure-Kubernetes infrastructure
+Application Gateway     = L7 / application ingress
 ```
+
+The Application Gateway is not simply replacing the AKS Load Balancer.
 
 ---
 
-## 20. References
+## 16. Monitoring and Prometheus metrics
 
-- Private AKS clusters: https://learn.microsoft.com/en-us/azure/aks/private-clusters
-- Private AKS connectivity: https://learn.microsoft.com/en-us/azure/aks/private-cluster-connect
-- AKS Run Command/private cluster access: https://learn.microsoft.com/en-us/azure/aks/access-private-cluster
-- Azure CNI Overlay: https://learn.microsoft.com/en-us/azure/aks/azure-cni-overlay
-- ACR/private network-isolated AKS: https://learn.microsoft.com/en-us/azure/aks/network-isolated
-- Private endpoint DNS: https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-dns
-- Azure SQL private endpoint: https://learn.microsoft.com/en-us/azure/private-link/tutorial-private-endpoint-sql-portal
-- Azure SQL Private Link: https://learn.microsoft.com/en-us/azure/azure-sql/database/private-endpoint-overview
-- Application Gateway ingress controller: https://learn.microsoft.com/en-us/azure/application-gateway/ingress-controller-overview
-- AKS application networking: https://learn.microsoft.com/en-us/azure/aks/plan-application-networking
-- Azure VM quotas: https://learn.microsoft.com/en-us/azure/virtual-machines/quotas
+Azure Monitor monitoring is part of Phase 1.
+
+The Kubernetes system namespace was observed to contain components including:
+
+```text
+ama-metrics
+ama-metrics-ksm
+ama-metrics-node
+ama-logs
+metrics-server
+```
+
+Azure Monitor resources observed/used by the architecture include the monitoring workspace and managed collection resources such as Data Collection Rules/Endpoints and Log Analytics resources.
+
+### Managed Prometheus
+
+The project uses **Azure Monitor Managed Prometheus** rather than requiring a self-managed Prometheus server deployment in the application namespaces.
+
+The `ama-metrics*` workloads are the Kubernetes-side metric collection components.
+
+### Important distinction
+
+```text
+Kubernetes metrics collection
+        |
+        v
+Azure Monitor Agent / Managed Prometheus
+        |
+        v
+Azure Monitor workspace
+        |
+        +--> queries / dashboards / alerts as configured
+```
+
+The project repository documents this monitoring architecture. No claim is made here that a standalone self-managed Prometheus server is stored in the application repository.
+
+---
+
+## 17. Kubernetes system components relevant to Phase 1
+
+The following Kubernetes-side components were observed in `kube-system` during validation:
+
+- CoreDNS
+- Azure CNI / networking components
+- CSI Azure Disk/File drivers
+- Cloud Node Manager
+- Kube-proxy
+- Metrics Server
+- Azure Monitor Agent / Managed Prometheus components
+- `ingress-appgw-deployment`
+- Other standard AKS control/data-plane add-ons
+
+These components are not application workloads. They support the AKS platform, networking, storage, ingress and observability layers.
+
+---
+
+## 18. Identity and access model
+
+The architecture uses Azure managed identities and RBAC where supported rather than distributing long-lived Azure credentials.
+
+Important relationships include:
+
+```text
+AKS / kubelet identity
+        |
+        +--> ACR image-pull authorization
+
+Application workload identity (where implemented)
+        |
+        +--> narrowly scoped Azure resource permissions
+
+Human administrator
+        |
+        +--> Azure RBAC + Kubernetes RBAC
+```
+
+During validation, the current Kubernetes identity returned:
+
+```text
+kubectl auth can-i delete nodes
+yes
+```
+
+This confirms the current identity has cluster-level permission to delete nodes. It is an observation of the configured RBAC state, not a recommended routine operation.
+
+---
+
+## 19. Secrets and Key Vault direction
+
+The private Key Vault foundation is now present.
+
+Sensitive configuration should not be committed to GitHub.
+
+The intended progression is:
+
+```text
+Application Pod
+      |
+      v
+Workload identity
+      |
+      v
+Azure RBAC
+      |
+      v
+Private Key Vault
+      |
+      v
+Secret / certificate / key
+```
+
+Non-sensitive configuration can remain in Kubernetes ConfigMaps. Sensitive values should use an appropriate secret-management mechanism, with Key Vault available as the Azure-managed secret store.
+
+---
+
+## 20. Verified traffic flows
+
+### 20.1 Administrator -> private AKS API
+
+```text
+PC
+ -> P2S VPN
+ -> VPN Gateway
+ -> VNet/private DNS
+ -> Private AKS API
+ -> kubectl
+```
+
+### 20.2 AKS -> ACR
+
+```text
+AKS node
+ -> acrazureproject.azurecr.io
+ -> private DNS
+ -> ACR Private Endpoint
+ -> ACR
+ -> container image
+```
+
+**Validated with an actual `hello-world` image pull.**
+
+### 20.3 AKS -> Azure SQL
+
+```text
+Pod
+ -> sql-azure-project.database.windows.net
+ -> privatelink.database.windows.net
+ -> 10.20.2.6
+ -> SQL Private Endpoint
+ -> Azure SQL
+```
+
+**Validated with DNS lookup and TCP/1433 connectivity.**
+
+### 20.4 AKS -> Key Vault
+
+```text
+Pod
+ -> kv-azure-aks-project.vault.azure.net
+ -> privatelink.vaultcore.azure.net
+ -> 10.20.2.7
+ -> Key Vault Private Endpoint
+ -> Key Vault
+```
+
+**Validated with private DNS resolution.**
+
+### 20.5 Internet -> application
+
+```text
+Internet
+ -> Application Gateway public frontend
+ -> listener/routing rule
+ -> AGIC-managed backend
+ -> Kubernetes Service
+ -> application Pod
+```
+
+The remaining end-to-end HTTP/HTTPS application test belongs to the application/ingress phase.
+
+---
+
+## 21. Validation checklist
+
+| Validation | Result | Meaning |
+|---|---|---|
+| `kubectl get nodes` | 2 nodes `Ready` | AKS worker plane healthy at validation time |
+| Private AKS API | Working over VPN | Private administration path operational |
+| VPN disconnect test | API hostname became unresolvable | Confirms dependence on private access path |
+| ACR image pull | Successful | AKS can pull from ACR |
+| SQL DNS lookup | `10.20.2.6` | Private SQL DNS works |
+| SQL TCP/1433 | Succeeded | Private SQL network path works |
+| Key Vault DNS lookup | `10.20.2.7` | Private Key Vault DNS works |
+| Key Vault public access | Disabled | Public network access is blocked |
+| Application Gateway | Created | Azure L7 ingress resource exists |
+| AGIC deployment | Running | Kubernetes-side ingress controller exists |
+| Managed Prometheus components | Running | Monitoring/metrics foundation exists |
+
+---
+
+## 22. Phase 1 architecture is complete
+
+Phase 1 now contains the intended private infrastructure foundation:
+
+```text
++---------------------------------------------------------------+
+|                        Azure Subscription                    |
+|                                                               |
+|  rg-azure-aks                                                 |
+|  +---------------------------------------------------------+  |
+|  | vnet-azure-project                                      |  |
+|  |                                                         |  |
+|  |  snet-appgw 10.20.0.0/24                               |  |
+|  |       |                                                 |  |
+|  |       +--> Application Gateway                          |  |
+|  |                                                         |  |
+|  |  AKS subnet                                             |  |
+|  |       |                                                 |  |
+|  |       +--> Private AKS                                  |  |
+|  |                                                         |  |
+|  |  Private Endpoint subnet                                |  |
+|  |       |                                                 |  |
+|  |       +--> ACR PE/NIC                                   |  |
+|  |       +--> SQL PE/NIC                                   |  |
+|  |       +--> Key Vault PE/NIC                             |  |
+|  |                                                         |  |
+|  |  Private DNS Resolver                                   |  |
+|  |       |                                                 |  |
+|  |       +--> ACR / SQL / Key Vault private DNS zones      |  |
+|  +---------------------------------------------------------+  |
+|                                                               |
+|  MC_... AKS managed resource group                            |
+|       +--> VMSS / nodes / NICs / disks / Load Balancer       |
+|                                                               |
+|  Monitoring managed resources                                 |
+|       +--> Azure Monitor / Managed Prometheus / Log Analytics |
++---------------------------------------------------------------+
+
+Administrator PC
+      |
+      +--> P2S VPN -> VPN Gateway -> Private AKS API
+
+Internet
+      |
+      +--> Application Gateway -> AGIC -> Kubernetes Services
+```
+
+The infrastructure foundation is therefore complete. The next work is application-facing: deploy the application workloads, expose them through internal Kubernetes Services, configure the required Ingress rules/listeners/backend routing, configure HTTPS/TLS as required, and perform an end-to-end application request test.
+
+---
+
+## 23. Items intentionally not guessed in this document
+
+The following values were not captured in the final validation evidence and should be obtained from Azure if exact inventory is required:
+
+- Exact VNet CIDR in the final deployed state.
+- Exact AKS/node subnet name and CIDR.
+- Exact `PrivateEndpointSubnet` CIDR.
+- VPN Gateway exact resource name, SKU, public IP and GatewaySubnet CIDR.
+- Private DNS Resolver resource name, endpoint names and endpoint IPs.
+- Generated Private Endpoint resource names and NIC names.
+- ACR Private Endpoint IP address.
+- Complete generated `MC_...` resource-group suffix and full resource inventory.
+- Exact Azure Monitor workspace/DCR/DCE generated resource names.
+- Complete Application Gateway listener, probe, backend-pool and routing-rule configuration.
+
+These omissions are deliberate: architecture documentation should distinguish verified deployed values from planned or inferred values.
+
+---
+
+## 24. Historical note
+
+An earlier version of this document listed the following as intentionally deferred:
+
+- VPN Gateway
+- Azure Private DNS Resolver
+- Key Vault private endpoint
+
+Those statements are **obsolete** for the current environment.
+
+They were design-stage decisions from before provisioning. The actual Phase 1 environment now includes all three:
+
+```text
+P2S VPN Gateway              -> DEPLOYED
+Azure Private DNS Resolver   -> DEPLOYED / IN USE
+Key Vault Private Endpoint   -> DEPLOYED / DNS VALIDATED
+```
+
+This section is retained only to prevent future readers from mistaking the historical design baseline for the current architecture.
+
+---
+
+## 25. Repository documentation relationship
+
+This file is the current private-AKS architecture baseline for the project repository:
+
+```text
+docs/PRIVATE_AKS_ARCHITECTURE.md
+```
+
+Other repository documents may contain earlier planning assumptions. When there is a conflict between a historical planning statement and this current architecture baseline, the deployed Azure/Kubernetes state and the latest validated evidence should be treated as authoritative.
