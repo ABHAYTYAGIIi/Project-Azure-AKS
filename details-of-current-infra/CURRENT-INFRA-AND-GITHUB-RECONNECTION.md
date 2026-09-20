@@ -53,6 +53,24 @@ The VM's replacement private/public IP addresses are not recorded here until ver
 - Inbound endpoint IP: `10.20.254.4`
 - VNet custom DNS: `10.20.254.4`
 
+### Confirmed SQL rebuild status
+
+The SQL data layer has now been created and verified:
+
+- SQL server: `sql-azure-project`
+- SQL hostname: `sql-azure-project.database.windows.net`
+- DEV database: `sqldb-autocare-dev`
+- UAT database: `sqldb-autocare-uat`
+- PROD database: `sqldb-autocare-prod`
+- SQL private endpoint: `PE-SQL-AZURE-PROJECT`
+- Private DNS zone: `privatelink.database.windows.net`
+
+The SQL private endpoint is associated with the **SQL server**, not an individual database. Therefore the single private endpoint provides private access to all three databases on `sql-azure-project`; separate SQL private endpoints for DEV/UAT/PROD are not required.
+
+SQL authentication was retained because the application configuration uses the documented SQL administrator username `sqladmin`. Microsoft Entra authentication remains available on the server.
+
+The SQL password is not stored in Git and will be recreated/managed through Key Vault as part of the application Workload Identity/Secrets Store CSI flow.
+
 ### Rebuild status of remaining data-plane resources
 
 The SQL server, three SQL databases, Key Vault, their private endpoints, and the rebuilt AKS/Application Gateway are **not marked complete in this document until they are actually created and verified**.
