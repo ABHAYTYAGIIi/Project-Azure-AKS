@@ -915,3 +915,298 @@ VNet 10.20.0.0/16
 ```
 
 This is the baseline that the replacement infrastructure should reconnect to.
+
+---
+
+# 31. Second repository re-audit — additional findings
+
+A second, deeper audit was performed after the first version of this document was created. This audit inspected repository trees, active workflows, documentation, and the legacy k8s/base and k8s/overlays files in all three application repositories.
+
+The following items were missed by the first audit and are important for the Azure rebuild/reconnection.
+
+## 31.1 Historical Application Gateway public IP
+
+Files:
+
+    autocare-frontend/docs/AKS-DEPLOYMENT.md
+    autocare-api/docs/AKS-DEPLOYMENT.md
+    autocare-maintenance-service/docs/AKS-DEPLOYMENT.md
+
+All three documents contain the historical Application Gateway public IP:
+
+    4.247.238.128
+
+They also contain historical public endpoint examples such as:
+
+    http://4.247.238.128/autocare/
+    http://4.247.238.128/autocare/api/health
+
+RECONNECT IMPACT: a recreated Application Gateway can receive a different public IP. These documents must be updated if the public endpoint changes. Do not use this IP as the source of truth for the new deployment.
+
+## 31.2 Frontend SSL/TLS documentation contains UAT-specific Azure dependencies
+
+File:
+
+    autocare-frontend/docs/SSL-INGRESS-KEYVAULT.md
+
+Documented values/architecture include:
+
+    uat.autocare.local
+    autocare-uat-tls
+    id-appgw-keyvault
+    privatelink.vaultcore.azure.net
+
+The document also records the tested Application Gateway → Key Vault certificate retrieval model, including the App Gateway identity, AGIC identity, Key Vault RBAC, private endpoint, private DNS and AzureServices bypass behavior.
+
+RECONNECT IMPACT: these are important historical TLS/Application Gateway dependencies that must be deliberately recreated or revalidated.
+
+## 31.3 Legacy frontend overlays contain all three environment hostnames and certificate names
+
+Files:
+
+    autocare-frontend/k8s/overlays/dev/ingress-patch.yaml
+    autocare-frontend/k8s/overlays/uat/ingress-patch.yaml
+    autocare-frontend/k8s/overlays/prod/ingress-patch.yaml
+
+Known values:
+
+    dev.autocare.local  -> autocare-dev-tls
+    uat.autocare.local  -> autocare-uat-tls
+    prod.autocare.local -> autocare-prod-tls
+
+All three also use ssl-redirect=true.
+
+Important: the current active workflow deploys k8s/dev, k8s/uat or k8s/prod directly, so these legacy overlays are not currently driving deployment. They still contain infrastructure references and must be classified during repository cleanup.
+
+## 31.4 Legacy frontend manifests hardcode the old ACR
+
+Legacy files under autocare-frontend/k8s/base and autocare-frontend/k8s/overlays contain:
+
+    acrazureproject.azurecr.io/autocare-frontend
+
+The overlays use static tag:
+
+    v2
+
+These are not the current GitHub Actions image references. The active workflow constructs the image from GitHub Variables and the commit SHA.
+
+## 31.5 Legacy API base contains old Workload Identity, Key Vault and ACR values
+
+Files:
+
+    autocare-api/k8s/base/secretproviderclass.yaml
+    autocare-api/k8s/base/serviceaccount.yaml
+    autocare-api/k8s/base/deployment.yaml
+
+Known hardcoded values include:
+
+    clientID: 037fe6d8-128e-4e44-bbda-2a910f758355
+    keyvaultName: kv-azure-aks-project
+    tenantId: a3c9a20a-5f7c-4023-a4a6-f0c1281063e2
+    azure.workload.identity/client-id: 037fe6d8-128e-4e44-bbda-2a910f758355
+    image: acrazureproject.azurecr.io/autocare-api
+
+These are legacy references but will still be found by repository-wide searches after the Azure rebuild.
+
+## 31.6 Significant legacy API secret-name discrepancy
+
+Legacy API overlays contain different Key Vault secret object names:
+
+    dev  -> autocare-sql-password
+    uat  -> autocare-uat-sql-password
+    prod -> autocare-prod-sql-password
+
+The currently active environment-specific manifests use:
+
+    autocare-sql-password
+
+for dev, UAT and prod.
+
+This is a real discrepancy between the active deployment path and the legacy Kustomize artifacts. Do not assume all four secret names exist in the current or future Key Vault. The active deployment path is the current source of truth; legacy names should be treated as historical until explicitly verified.
+
+## 31.7 Legacy API overlays duplicate old SQL configuration
+
+Legacy API overlays contain:
+
+    DATABASE_HOST=sql-azure-project.database.windows.net
+    DATABASE_NAME=sqldb-autocare-dev
+    DATABASE_NAME=sqldb-autocare-uat
+    DATABASE_NAME=sqldb-autocare-prod
+    DATABASE_USER=sqladmin
+    DATABASE_PROVIDER=azure-sql
+    DATABASE_PORT=1433
+    DATABASE_ENCRYPT=true
+    DATABASE_TRUST_SERVER_CERTIFICATE=false
+
+These values therefore exist in both active ConfigMaps and legacy Kustomize configuration.
+
+## 31.8 Legacy API overlays hardcode old ACR and static image tags
+
+Legacy API overlays use:
+
+    acrazureproject.azurecr.io/autocare-api:v1
+
+The active workflow instead creates:
+
+    <ACR_LOGIN_SERVER>/<IMAGE_NAME>:<environment>-<GITHUB_SHA>
+
+Therefore the legacy overlays are not the current image source.
+
+## 31.9 Legacy maintenance-service manifests hardcode old ACR and static tags
+
+Files under autocare-maintenance-service/k8s/base and k8s/overlays contain:
+
+    acrazureproject.azurecr.io/autocare-maintenance-service
+
+and the overlays use:
+
+    v1
+
+Again, these are legacy references, not the active GitHub Actions image construction path.
+
+## 31.10 Repository documentation is partly stale relative to the active deployment
+
+The active workflow currently uses:
+
+    offline kubeconform
+    k8s/dev, k8s/uat, k8s/prod
+    GitHub OIDC
+    image artifacts
+    rendered IMAGE_PLACEHOLDER + one kubectl apply
+    automatic rollback
+    independent verification
+
+Some repository documents still describe:
+
+    manual image build/push
+    kubectl set image
+    Kustomize as a future model
+    the old Application Gateway public IP
+    old static image tags
+
+Therefore documentation is not the authoritative current deployment implementation. For the rebuild, the active .github/workflows/pipeline.yaml and active k8s/<environment>/ manifests are more relevant.
+
+## 31.11 API Docker documentation is stale
+
+autocare-api/docs/DOCKER-DEEP-DIVE.md states that main did not contain a Dockerfile and that the Dockerfile explanation was pending.
+
+The current tree does contain autocare-api/Dockerfile, and docs/DOCKER-INTEGRATION-VERIFICATION.md documents it as:
+
+    FROM node:22-bookworm-slim
+    WORKDIR /app
+    COPY package.json package-lock.json ./
+    RUN npm ci --omit=dev
+    COPY --chown=node:node src ./src
+    ENV NODE_ENV=production
+    EXPOSE 3000
+    USER node
+    CMD ["npm", "start"]
+
+This is not an Azure dependency, but it confirms that some repository documentation is stale.
+
+# 32. Consolidated repository-wide Azure reference inventory
+
+GitHub Actions secrets referenced by all three repositories:
+
+    AZURE_CLIENT_ID
+    AZURE_TENANT_ID
+    AZURE_SUBSCRIPTION_ID
+
+GitHub Actions variables referenced by all three repositories:
+
+    ACR_LOGIN_SERVER
+    ACR_NAME
+    AKS_CLUSTER_NAME
+    AZURE_RESOURCE_GROUP
+    IMAGE_NAME
+
+Active API Azure references:
+
+    sql-azure-project.database.windows.net
+    sqldb-autocare-dev
+    sqldb-autocare-uat
+    sqldb-autocare-prod
+    sqladmin
+    kv-azure-aks-project
+    037fe6d8-128e-4e44-bbda-2a910f758355
+    a3c9a20a-5f7c-4023-a4a6-f0c1281063e2
+
+Legacy Azure references:
+
+    acrazureproject.azurecr.io
+    sql-azure-project.database.windows.net
+    kv-azure-aks-project
+    037fe6d8-128e-4e44-bbda-2a910f758355
+
+Application Gateway/TLS references:
+
+    azure-application-gateway
+    autocare-dev-tls
+    autocare-uat-tls
+    autocare-prod-tls
+    dev.autocare.local
+    uat.autocare.local
+    prod.autocare.local
+
+Historical public endpoint:
+
+    4.247.238.128
+
+Private DNS zones:
+
+    privatelink.vaultcore.azure.net
+    privatelink.azurecr.io
+    privatelink.database.windows.net
+
+# 33. Active vs legacy source-of-truth
+
+| Area | Active current deployment | Legacy/historical artifact |
+|---|---|---|
+| Environment manifests | k8s/dev, k8s/uat, k8s/prod | k8s/base, k8s/overlays |
+| Image selection | GitHub workflow + SHA tag | Kustomize static tags |
+| ACR | GitHub Variables | Hardcoded old ACR hostname |
+| API Key Vault identity | Active SecretProviderClass + ServiceAccount | Same old values in base |
+| API SQL config | Active ConfigMaps | Kustomize generators |
+| Frontend host/cert | Active dev manifest currently has dev host/cert | Legacy overlays define dev/uat/prod |
+| Deployment method | GitHub Actions | Historical manual/Kustomize instructions |
+| Production approval | GitHub Environment | Not implemented by legacy artifacts |
+
+# 34. Revised pre-destruction rule
+
+Before deleting Azure, capture not only the active workflow values but also:
+
+    historical Application Gateway public IP
+    Application Gateway certificate names
+    environment hostnames
+    legacy Key Vault secret object names
+    legacy ACR hostname
+    legacy image tags
+    current Key Vault/Workload Identity IDs
+    SQL host/database/user values
+    GitHub Actions variables
+    GitHub Actions secret names
+    OIDC subjects
+    runner labels
+
+# 35. Revised post-rebuild stale-reference scan
+
+After the new infrastructure is created, verify the active deployment path first.
+
+Then scan all three repositories for old values. A PowerShell equivalent is:
+
+    rg -n "acrazureproject|aks-azure-project|rg-azure-aks|kv-azure-aks-project|sql-azure-project|037fe6d8-128e-4e44-bbda-2a910f758355|4.247.238.128|autocare-dev-tls|autocare-uat-tls|autocare-prod-tls|dev.autocare.local|uat.autocare.local|prod.autocare.local"
+
+Every remaining match must be classified as:
+
+1. intentionally retained historical documentation;
+2. active configuration that must be updated;
+3. obsolete legacy configuration that should be removed; or
+4. test/example data intentionally not connected to Azure.
+
+Do not blindly replace every match.
+
+# 36. Second-audit conclusion
+
+The first audit captured the main live Azure dependencies. The second audit found additional repository-wide references in historical documentation and legacy Kustomize artifacts, including old ACR names, old Workload Identity/Key Vault values, old SQL settings, environment-specific legacy Key Vault secret names, Application Gateway certificate/hostname values, and the historical public IP.
+
+The active GitHub Actions workflow plus active k8s/<environment>/ manifests remain the current deployment path. The legacy artifacts and documentation must be explicitly classified before old Azure values are removed.
