@@ -2,9 +2,61 @@
 
 **Purpose:** Preserve the current Azure/AKS architecture and every known GitHub-to-Azure/application connection before the current Azure infrastructure is deleted and rebuilt.
 
-**Status:** Snapshot of the current environment as audited on 2026-09-20.
+**Status:** Rebuild/reconnection document updated on 2026-09-20. It preserves the audited legacy baseline and records confirmed replacement-infrastructure changes as they are created.
 
 > This document is a rebuild reference, not a Terraform/Bicep source of truth. Values marked **CURRENT** describe the existing environment. Values marked **RECREATE** must be recreated or revalidated after the new infrastructure is built.
+
+## Rebuild update — 2026-09-20
+
+The Azure rebuild is now in progress. The following replacement-infrastructure changes are **confirmed**, not historical values:
+
+### Confirmed new ACR architecture
+
+Three environment-specific Azure Container Registries have been created:
+
+| Environment | ACR | Login server | SKU | Private Endpoint |
+|---|---|---|---|---|
+| DEV | `acrautocaredev01` | `acrautocaredev01.azurecr.io` | Premium | `PE-ACR-DEV-01` |
+| UAT | `acrautocareuat01` | `acrautocareuat01.azurecr.io` | Premium | `PE-ACR-UAT-01` |
+| PROD | `acrautocareprod01` | `acrautocareprod01.azurecr.io` | Premium | `PE-ACR-PROD-01` |
+
+All three ACRs use private access and the existing `PrivateEndpointSubnet` (`10.20.2.0/24`). The shared Private DNS zone is:
+
+`privatelink.azurecr.io`
+
+The new ACR naming convention is:
+
+`acr` + `autocare` + `<environment>` + `01`
+
+These names intentionally replace the previous single-ACR model `acrazureproject`.
+
+### Confirmed new runner design
+
+`vm-github-runner` is now the engineering/admin workspace and self-hosted GitHub Actions runner.
+
+- Azure region: Central India
+- Subnet: `snet-runner` (`10.20.3.0/24`)
+- Admin user: `azureuser`
+- Public IP: **required**
+- Managed identity: **none**
+- Microsoft Entra VM login: **disabled**
+- SSH key authentication: **enabled**
+- Azure CLI authentication from the VM: `az login`
+- The GitHub Actions UAMI `id-autocare-github-actions` is **not** attached to the VM.
+- The VM is intended to reach private ACR, SQL, Key Vault and AKS through the VNet.
+
+The VM's replacement private/public IP addresses are not recorded here until verified from Azure.
+
+### Confirmed private DNS resolver configuration
+
+- DNS Resolver inbound subnet: `DNSResolverInbound` (`10.20.254.0/28`)
+- Inbound endpoint IP: `10.20.254.4`
+- VNet custom DNS: `10.20.254.4`
+
+### Rebuild status of remaining data-plane resources
+
+The SQL server, three SQL databases, Key Vault, their private endpoints, and the rebuilt AKS/Application Gateway are **not marked complete in this document until they are actually created and verified**.
+
 
 ---
 
@@ -14,7 +66,7 @@ This audit covers:
 
 - Azure subscription, resource groups and AKS
 - VNet/subnets/private networking
-- ACR
+- Three environment-specific ACRs
 - Key Vault
 - Azure SQL
 - Private Endpoints and Private DNS
@@ -122,54 +174,97 @@ PrivateEndpointSubnet:
 
 # 5. Self-hosted GitHub Actions runner
 
+## Replacement runner design
+
 VM:
 
 - Name: `vm-github-runner`
-- Private IP: `10.20.3.4`
 - Subnet: `snet-runner`
+- Address space: `10.20.3.0/24`
 - Admin user: `azureuser`
-- Public IP: none
-- Managed identity: none
+- Public IP: **YES**
+- Managed identity: **none**
+- Microsoft Entra VM login: **disabled**
+- SSH key authentication: **enabled**
+- Azure location: Central India
 
-Installed tools include:
+The VM is both:
 
+1. the engineering/admin workspace used to operate the private Azure environment; and
+2. the self-hosted GitHub Actions runner.
+
+The user will operate Azure CLI, kubectl, kubelogin, Docker and Git from this VM rather than directly from the local Windows PC.
+
+The VM uses:
+
+- Azure CLI with interactive `az login`
 - Docker
 - kubectl
 - kubelogin
-- Azure CLI
+- Git
 
-The runner is inside the VNet. GitHub Actions itself is not directly entering the VNet from GitHub-hosted infrastructure. The GitHub job is executed by the self-hosted runner, and the runner has private network access to Azure resources.
+The VM has private network access to the VNet resources and is intended to reach:
 
-**RECREATE:** The new runner must be registered with the labels:
+- private ACR
+- private SQL
+- private Key Vault
+- private AKS
+
+The GitHub Actions UAMI `id-autocare-github-actions` must **not** be attached to this VM. GitHub Actions continues to authenticate to Azure through GitHub OIDC.
+
+**RECREATE/REGISTER:** The runner must use the labels:
 
 - `autocare-frontend`
 - `autocare-api`
 - `autocare-maintenance`
 
-Do **not** attach the GitHub Actions UAMI to the runner VM merely to make the pipeline work. The current design authenticates through GitHub OIDC.
+The replacement VM's actual private and public IP addresses must be recorded after Azure verification.
 
----
+# 6. Azure Container Registry — replacement architecture
 
-# 6. Current Azure Container Registry
+The rebuild no longer uses one shared ACR. It uses one private Premium ACR per environment.
 
-- ACR: `acrazureproject`
-- Login server: `acrazureproject.azurecr.io`
+| Environment | ACR name | Login server | SKU | Private Endpoint |
+|---|---|---|---|---|
+| DEV | `acrautocaredev01` | `acrautocaredev01.azurecr.io` | Premium | `PE-ACR-DEV-01` |
+| UAT | `acrautocareuat01` | `acrautocareuat01.azurecr.io` | Premium | `PE-ACR-UAT-01` |
+| PROD | `acrautocareprod01` | `acrautocareprod01.azurecr.io` | Premium | `PE-ACR-PROD-01` |
 
-Repositories currently used:
+Each environment ACR is intended to contain the application repositories:
 
 - `autocare-frontend`
 - `autocare-api`
 - `autocare-maintenance-service`
-- `hello-world`
-- `netshoot`
 
-`netshoot:latest` exists and is used by pipeline health checks.
+Private networking:
 
-Runtime application images are private.
+- VNet: `vnet-azure-project`
+- Private endpoint subnet: `PrivateEndpointSubnet`
+- Private DNS zone: `privatelink.azurecr.io`
+- Access model: **Private access**
 
-**RECREATE:** ACR must be recreated and the GitHub Actions identity must again receive ACR push permission.
+The GitHub Actions UAMI will need ACR push permission on all three replacement registries.
 
----
+The previous single ACR:
+
+- `acrazureproject`
+- `acrazureproject.azurecr.io`
+
+is now a **legacy/historical reference** and must not be used by the rebuilt deployment.
+
+The previous pipeline health-check image `netshoot:latest` was present in the old ACR. Its placement in the new environment-specific ACRs must be verified/implemented consistently with the rebuilt workflow before CI verification.
+
+**Naming convention:**
+
+`acrautocare<environment>01`
+
+Examples:
+
+```text
+acrautocaredev01
+acrautocareuat01
+acrautocareprod01
+```
 
 # 7. Current Azure SQL
 
@@ -301,37 +396,75 @@ The AKS kubelet identity observed in `az aks show` is:
 
 # 11. Private Endpoints
 
-Current private endpoints in `PrivateEndpointSubnet`:
+## Confirmed replacement ACR private endpoints
+
+The three replacement ACR private endpoints are:
+
+- `PE-ACR-DEV-01` → `acrautocaredev01`
+- `PE-ACR-UAT-01` → `acrautocareuat01`
+- `PE-ACR-PROD-01` → `acrautocareprod01`
+
+All three use:
+
+- VNet: `vnet-azure-project`
+- Subnet: `PrivateEndpointSubnet`
+- CIDR: `10.20.2.0/24`
+- Target sub-resource: `registry`
+- Private DNS integration: enabled
+
+## Remaining private endpoints
+
+The replacement Key Vault and SQL private endpoints are part of the rebuild but are **not marked complete until created and verified**.
+
+The old private endpoint names remain historical:
 
 - `PE-ACR-AZURE-PROJECT`
 - `PE-KV-AZURE-PROJECT`
 - `PE-SQL-AZURE-PROJECT`
 
-The ACR private endpoint currently has two IP configurations; Key Vault and SQL each have one. This is why the subnet inspection showed four IP configurations for three private endpoints.
+For the new ACR architecture, the approved naming convention is:
 
-**RECREATE:** Recreate the three private endpoint connections against the new ACR, Key Vault and SQL resources.
+- `PE-ACR-DEV-01`
+- `PE-ACR-UAT-01`
+- `PE-ACR-PROD-01`
 
----
+The new Key Vault and SQL private endpoint names will be recorded here after creation.
 
 # 12. Private DNS
 
-Main resource group DNS zones:
+## Confirmed replacement DNS design
 
-| Private DNS zone | Record sets observed | VNet links |
-|---|---:|---:|
-| privatelink.azurecr.io | 3 | 1 |
-| privatelink.database.windows.net | 2 | 1 |
-| privatelink.vaultcore.azure.net | 2 | 1 |
+Shared private DNS zones are used by the private endpoints rather than creating one zone per environment.
 
-AKS managed resource group DNS zone:
+| Private DNS zone | Purpose |
+|---|---|
+| `privatelink.azurecr.io` | All three replacement ACR private endpoints |
+| `privatelink.database.windows.net` | Replacement SQL private endpoint |
+| `privatelink.vaultcore.azure.net` | Replacement Key Vault private endpoint |
 
-- `2fb54672-d6e4-4a69-a2b6-2f8b7ba19de0.privatelink.centralindia.azmk8s.io`
-- 2 record sets
-- 1 VNet link
+The ACR zone is shared by:
 
-**RECREATE:** Private DNS zones/links must be recreated correctly if the private networking model is retained.
+- `PE-ACR-DEV-01`
+- `PE-ACR-UAT-01`
+- `PE-ACR-PROD-01`
 
----
+The project intentionally creates/integrates these private DNS zones as part of private endpoint setup rather than creating empty zones in advance.
+
+## Private DNS Resolver
+
+- Resolver inbound subnet: `DNSResolverInbound`
+- Subnet CIDR: `10.20.254.0/28`
+- Inbound endpoint IP: `10.20.254.4`
+- VNet custom DNS: `10.20.254.4`
+
+Important distinction:
+
+`10.20.254.0/28` is the resolver subnet.  
+`10.20.254.4` is the DNS Resolver inbound endpoint IP and the VNet custom DNS server.
+
+The AKS managed private DNS zone is generated by AKS and its final value must be recorded after the replacement AKS cluster is created.
+
+**VERIFY:** DNS resolution for ACR, SQL and Key Vault private endpoints must be tested from the replacement runner/AKS network after those resources are created.
 
 # 13. GitHub OIDC
 
@@ -446,16 +579,24 @@ IMAGE_NAME=autocare-api
 IMAGE_NAME=autocare-maintenance-service
 ```
 
-Current Azure-dependent values:
+Current/replacement Azure-dependent values:
 
 ```
-ACR_NAME=acrazureproject
-ACR_LOGIN_SERVER=acrazureproject.azurecr.io
 AKS_CLUSTER_NAME=aks-azure-project
 AZURE_RESOURCE_GROUP=rg-azure-aks
 ```
 
-These are the values that must be revalidated after the rebuild.
+The ACR values are now environment-specific:
+
+| Environment | ACR_NAME | ACR_LOGIN_SERVER |
+|---|---|---|
+| dev | `acrautocaredev01` | `acrautocaredev01.azurecr.io` |
+| uat | `acrautocareuat01` | `acrautocareuat01.azurecr.io` |
+| prod | `acrautocareprod01` | `acrautocareprod01.azurecr.io` |
+
+**REQUIRED WORKFLOW/GITHUB UPDATE:** The current variable names `ACR_NAME` and `ACR_LOGIN_SERVER` are retained, but their values must become environment-specific through the GitHub Environment configuration or equivalent workflow logic. Do not keep one repository-wide ACR value.
+
+GitHub Actions supports environment-level configuration variables and environment-level values take precedence over repository-level values when the same variable is defined at multiple levels.
 
 ---
 
@@ -532,10 +673,18 @@ The workflow constructs:
 <ACR_LOGIN_SERVER>/<IMAGE_NAME>:<environment>-<GITHUB_SHA>
 ```
 
-Example pattern:
+Example pattern for PROD:
 
 ```
-acrazureproject.azurecr.io/autocare-api:prod-<SHA>
+acrautocareprod01.azurecr.io/autocare-api:prod-<SHA>
+```
+
+Equivalent environment mappings:
+
+```
+dev  -> acrautocaredev01.azurecr.io
+uat  -> acrautocareuat01.azurecr.io
+prod -> acrautocareprod01.azurecr.io
 ```
 
 The Kubernetes manifests contain:
@@ -669,13 +818,13 @@ Maintenance:
 http://autocare-maintenance-service:8001/health
 ```
 
-The temporary health-check pods use:
+The temporary health-check pods historically use:
 
 ```
 <ACR_LOGIN_SERVER>/netshoot:latest
 ```
 
-Therefore `netshoot:latest` must exist in the new ACR or the verification stage will fail.
+The old shared ACR contained `netshoot:latest`. Because the new architecture has one ACR per environment, the rebuilt pipeline must either provide `netshoot:latest` in each environment ACR or deliberately change the health-check image source. This must be verified before CI/CD validation.
 
 ---
 
@@ -691,6 +840,7 @@ Therefore `netshoot:latest` must exist in the new ACR or the verification stage 
 - SQL
 - Private Endpoints
 - Private DNS
+- Private DNS Resolver configuration
 - Application Gateway/ingress
 - AKS managed identities
 - GitHub Actions UAMI
@@ -848,11 +998,28 @@ Do not treat them as live Azure dependencies without verifying their contents an
 
 When rebuilding Azure:
 
-**Prefer keeping stable names where there is no reason to change them.**
+**Keep stable names where the rebuild has intentionally retained them, and explicitly document every deliberate change.**
 
-If we keep the current names for ACR, AKS, resource group, Key Vault and SQL server, many GitHub and Kubernetes values can remain unchanged.
+Stable/reused names currently include:
 
-If names are intentionally changed, update the exact locations documented above rather than searching and replacing arbitrary strings across the repositories.
+- `rg-azure-aks`
+- `vnet-azure-project`
+- `aks-azure-project` (target name; revalidate after AKS rebuild)
+- `sql-azure-project` (target name; not yet rebuilt)
+- `kv-azure-aks-project` (target name; not yet rebuilt)
+- `vm-github-runner`
+- `id-autocare-app`
+- `id-autocare-github-actions`
+
+Deliberate naming changes:
+
+- one old ACR `acrazureproject` → three environment-specific ACRs
+- ACR DEV → `acrautocaredev01`
+- ACR UAT → `acrautocareuat01`
+- ACR PROD → `acrautocareprod01`
+- ACR private endpoints → `PE-ACR-DEV-01`, `PE-ACR-UAT-01`, `PE-ACR-PROD-01`
+
+If a name is intentionally changed, update the exact GitHub variable, workflow, Kubernetes manifest, Azure federated credential or documentation location that depends on it. Do not perform blind repository-wide replacement.
 
 After each Azure component is recreated, verify its actual Azure value and then update the corresponding GitHub variable, secret, Kubernetes manifest or Azure federated credential.
 
@@ -1210,3 +1377,69 @@ Do not blindly replace every match.
 The first audit captured the main live Azure dependencies. The second audit found additional repository-wide references in historical documentation and legacy Kustomize artifacts, including old ACR names, old Workload Identity/Key Vault values, old SQL settings, environment-specific legacy Key Vault secret names, Application Gateway certificate/hostname values, and the historical public IP.
 
 The active GitHub Actions workflow plus active k8s/<environment>/ manifests remain the current deployment path. The legacy artifacts and documentation must be explicitly classified before old Azure values are removed.
+
+# 37. Rebuild change log — confirmed 2026-09-20
+
+This section records the replacement-infrastructure changes that supersede the original single-ACR/runner assumptions in this document.
+
+## ACR
+
+Old model:
+
+```text
+acrazureproject
+```
+
+Replacement model:
+
+```text
+DEV  -> acrautocaredev01
+UAT  -> acrautocareuat01
+PROD -> acrautocareprod01
+```
+
+All three are Premium/private-access registries with private endpoints in `PrivateEndpointSubnet`.
+
+## ACR private endpoints
+
+```text
+PE-ACR-DEV-01
+PE-ACR-UAT-01
+PE-ACR-PROD-01
+```
+
+All use the shared:
+
+```text
+privatelink.azurecr.io
+```
+
+## Runner
+
+The runner VM has changed from the old audit assumption of no public IP to the deliberate replacement design:
+
+- `vm-github-runner`
+- Public IP: required
+- Managed identity: none
+- Entra VM login: disabled
+- SSH key authentication: enabled
+- Admin user: `azureuser`
+- Workspace + self-hosted runner role combined
+
+The public IP is for controlled SSH/workspace access; private Azure resources remain accessed through the VNet.
+
+## Still pending
+
+The following must be added to this document only after actual Azure creation/verification:
+
+- replacement SQL server and databases
+- replacement Key Vault and secret
+- SQL private endpoint
+- Key Vault private endpoint
+- replacement AKS
+- replacement Application Gateway/ingress
+- recreated UAMI IDs/client IDs and role assignments
+- recreated GitHub OIDC federated credentials
+- updated GitHub environment variables
+- runner registration and final IPs
+- end-to-end private DNS validation
