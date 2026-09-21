@@ -1,5 +1,26 @@
 # Phase 1 — AKS Networking Design and Configuration Guide
 
+> ## Current verified architecture — 2026-09-21
+>
+> **Important:** The original version of this document was written during the initial AKS portal design and contains historical alternatives. The current cluster is **private AKS**, not public AKS.
+>
+> Current verified networking:
+>
+> - AKS API endpoint: **Private**
+> - Pod networking: **Azure CNI Overlay**
+> - Pod CIDR: **10.244.0.0/16**
+> - Service CIDR: **10.0.0.0/16**
+> - VNet: **vnet-azure-project / 10.20.0.0/16**
+> - AKS subnet: **snet-aks / 10.20.1.0/24**
+> - Private DNS resolver inbound endpoint: **10.20.254.4**
+> - Private endpoint subnet: **PrivateEndpointSubnet / 10.20.2.0/24**
+>
+> The historical sections below are retained as learning/reference material. Wherever they say that public AKS is "our choice", that statement is **historical and superseded** by the current private-cluster architecture.
+>
+> Current environment names are **dev / uat / prod**. Older references to qa are historical.
+
+# Phase 1 — AKS Networking Design and Configuration Guide
+
 ## Status
 
 **Status: Design and configuration guidance — no networking resources should be provisioned until the final SKU, quota, IP, and service-availability checks pass.**

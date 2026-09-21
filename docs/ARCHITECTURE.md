@@ -1,217 +1,238 @@
-# Architecture
+# Azure AutoCare — Current Architecture
 
-## Architectural Goal
+> **Source of truth:** This document describes the current verified/rebuilt architecture. Older design alternatives remain historical and must not override the state below.
 
-Build and operate a full-stack AutoCare application on a single AKS cluster with environment isolation through Kubernetes namespaces. The application source remains a **single codebase**; environment differences are supplied through deployment configuration rather than duplicated application trees.
+## 1. Current Azure Architecture
 
-The target external architecture uses one Application Gateway and Kubernetes Ingress with path-based routing.
+| Layer | Current state |
+|---|---|
+| Resource group | rg-azure-aks |
+| Region | Central India |
+| VNet | vnet-azure-project — 10.20.0.0/16 |
+| AKS | aks-azure-project |
+| AKS API | **Private** |
+| AKS networking | Azure CNI Overlay |
+| Kubernetes | **1.35.8** verified current version |
+| ACR | Three environment-specific Premium registries |
+| SQL | sql-azure-project.database.windows.net |
+| Key Vault | kv-azure-aks-project |
+| Runner VM | vm-github-runner |
+| GitHub runners | Self-hosted runners inside the Azure VNet |
 
-## Application Architecture
+## 2. Network Layout
 
-```text
-Browser
-  |
-  v
-React / Vite frontend
-  |
-  | HTTP / REST
-  v
-Node.js / Express API
-  |
-  +--------------------> Azure SQL Database (target runtime provider)
-  |
-  | HTTP
-  v
-Python / FastAPI maintenance service
-```
+    10.20.0.0/16
+    |
+    +-- snet-appgw             10.20.0.0/24
+    +-- snet-aks               10.20.1.0/24
+    +-- PrivateEndpointSubnet  10.20.2.0/24
+    +-- snet-runner            10.20.3.0/24
+    +-- DNSResolverInbound     10.20.254.0/28
+    +-- GatewaySubnet          10.20.255.0/27
 
-For the current local Development baseline, the database boundary uses the in-memory repository and the maintenance service runs as a separate local HTTP process. Azure SQL is a planned runtime dependency and has not yet been validated for this application.
+The VNet uses the private DNS resolver path. The inbound resolver endpoint is 10.20.254.4.
 
-## Target AKS Architecture
+Shared private DNS zones include:
 
-```text
-                         Internet
-                            |
-                            | HTTPS / SSL
-                            v
-                 +------------------------+
-                 | Application Gateway    |
-                 | Public entry point     |
-                 +-----------+------------+
-                             |
-                             v
-                    Kubernetes Ingress
-                    Path-based routing
-                             |
-             +---------------+---------------+
-             |               |               |
-             v               v               v
-          /dev/*           /qa/*           /prod/*
-             |               |               |
-             v               v               v
-          dev ns           qa ns           prod ns
-             |               |               |
-        +----+----+     +----+----+     +----+----+
-        |    |    |     |    |    |     |    |    |
-      React Node Python React Node Python React Node Python
-             |               |               |
-             +---------------+---------------+
-                             |
-                             v
-                       Azure SQL PaaS
-```
+- privatelink.azurecr.io
+- privatelink.database.windows.net
+- privatelink.vaultcore.azure.net
 
-The diagram represents the target deployment architecture. It is not evidence that every target resource has already been deployed.
+Private endpoints are integrated with their corresponding DNS zones.
 
-## Application Components
+## 3. AKS Control Plane and Identity
 
-### Frontend
+Verified AKS settings:
 
-- React / Vite
-- HTML / CSS
-- Served from a container in AKS.
-- Uses a configurable API base URL.
-- Public application base is `/autocare/` in the current application.
+    privateCluster = true
+    localAccountsDisabled = true
+    networkPlugin = azure
+    networkPluginMode = overlay
+    oidcIssuerProfile = true
+    workloadIdentity = true
+    kubernetesVersion = 1.35.8
 
-### Node.js API
+Microsoft Entra integration is managed.
 
-The Express application provides the primary REST API and business layer.
+Azure RBAC for Kubernetes is disabled. Kubernetes RBAC is the authorization layer.
 
-Responsibilities include:
+The configured administrator group object ID is:
 
-- API endpoints
-- Validation and domain logic
-- Repository abstraction
-- Customer, vehicle, booking, service-center, and service-type operations
-- Maintenance-analysis orchestration
-- HTTP communication with the Python maintenance service
+    09f59b55-0f25-424b-a86f-d3233c48901e
 
-### Python Maintenance Service
+The runner VM uses its system-assigned managed identity for Azure authentication. Private kubectl administration occurs from the VNet-connected VM/self-hosted runner.
 
-FastAPI provides the specialized maintenance-analysis capability.
+## 4. Pod Networking
 
-The Node.js API calls this service over HTTP. The service returns a deterministic maintenance recommendation for the supplied vehicle/history input.
+The cluster uses **Azure CNI Overlay**.
 
-### Database
+Current verified conceptual ranges include:
 
-Azure SQL Database is the target managed relational database. SQL is not intended to run as a database container in AKS.
+- Pod CIDR: 10.244.0.0/16
+- Service CIDR: 10.0.0.0/16
 
-The Node.js API contains a repository boundary with an in-memory implementation for Development/local work and an Azure SQL implementation for the SQL-backed runtime.
+Azure CNI Overlay keeps Pod addressing separate from the Azure VNet node subnet, conserving VNet IP space.
 
-## Environment Model
+Do not confuse:
 
-One AKS cluster is intended to contain:
+1. AKS API public/private access
+2. Pod IPAM/CNI model
+3. network policy
+4. Azure load balancing
 
-```text
-namespace: dev
-namespace: qa
-namespace: prod
-```
+They are separate architectural decisions.
 
-There is **one source tree** for the application. The same tested container image should be promoted between environments where practical.
+## 5. Private Resource Connectivity
 
-Environment-specific values should be supplied through deployment configuration:
+### Azure Container Registry
 
-- ConfigMaps for non-sensitive values.
-- Kubernetes Secrets and/or Azure Key Vault integration for sensitive values.
-- GitHub Actions environment variables/inputs for controlled promotion.
+Current registries:
 
-Examples of values that may vary by environment include database endpoints, maintenance-service URLs, public base paths, replica counts, resource limits, and feature/configuration flags.
+    acrautocaredev01.azurecr.io
+    acrautocareuat01.azurecr.io
+    acrautocareprod01.azurecr.io
 
-QA and Production are therefore deployment environments, not separate application codebases.
+Each has a private endpoint in PrivateEndpointSubnet and uses the shared ACR private DNS zone.
 
-## Service Exposure
+The old acrazureproject.azurecr.io registry is legacy and must not be used for new configuration.
 
-Application services should normally use Kubernetes `ClusterIP` Services.
+### Azure SQL
 
-No individual React, Node.js, or Python Service should receive a public IP unless a specific requirement makes it necessary.
+SQL server:
 
-External traffic should enter through Application Gateway and then be routed through the Kubernetes Ingress layer.
+    sql-azure-project.database.windows.net
 
-The Python maintenance service should remain internal to the cluster because it is called by the Node.js API rather than directly by browsers.
+Databases:
 
-## Path-Based Routing
+- sqldb-autocare-dev
+- sqldb-autocare-uat
+- sqldb-autocare-prod
 
-The target public structure is:
+The SQL server uses a private endpoint and private DNS.
 
-```text
-https://<domain>/dev/*
-https://<domain>/qa/*
-https://<domain>/prod/*
-```
+### Key Vault
 
-Within each environment, the intended public application paths are conceptually:
+Vault:
 
-```text
-/<environment>/          -> React frontend
-/<environment>/api/      -> Node.js API
-```
+    kv-azure-aks-project
 
-The Python service is an internal service-to-service endpoint and does not need a public route.
+Private endpoint:
 
-Exact URL rewrite/strip-prefix behavior will be selected during implementation so that the application can run from the same image in each namespace.
+    PE-KV-AZURE-PROJECT
 
-## Security Boundaries
+The vault uses private/restricted network access and Azure RBAC.
 
-- AKS API server should be private where supported by the final design.
-- Application Gateway is the intended public entry point.
-- Backend Kubernetes Services should remain internal.
-- Secrets must never be committed to GitHub.
-- Non-sensitive configuration belongs in ConfigMaps.
-- Sensitive configuration belongs in Secrets and, where appropriate, Azure Key Vault integration.
-- Least-privilege Azure and Kubernetes access should be used.
+Application workloads should receive only the Key Vault permissions they need, such as Key Vault Secrets User, rather than administrative rights.
 
-## Resource Strategy
+## 6. Runner Architecture
 
-The project is constrained by an Azure for Students subscription. The initial cluster should use the smallest viable node configuration that can run the required workloads.
+    Developer/admin workstation
+              |
+              | SSH
+              v
+    vm-github-runner
+              |
+              +-- private DNS
+              +-- private AKS API
+              +-- private ACR
+              +-- private SQL
+              +-- private Key Vault
+              |
+              +-- GitHub self-hosted runners
 
-Start with one replica per application workload unless testing demonstrates that more capacity is required. Define CPU and memory requests/limits for workloads.
+The VM has a public IP for SSH access, but its workload/admin network path is through the project VNet.
 
-## Deployment Strategy
+Three GitHub runner services are installed for the three application repositories:
 
-Phase 1 establishes a manual Development deployment first:
+- frontend
+- API
+- maintenance service
 
-```text
-Build -> Test -> Containerize -> Push to ACR -> Deploy to AKS dev -> Validate
-```
+## 7. Application Architecture
 
-Phase 2 introduces GitHub Actions:
+    Browser
+       |
+       v
+    React/Vite frontend
+       |
+       | /autocare/api
+       v
+    Node.js / Express API
+       |
+       +--> Azure SQL
+       |
+       +--> Python/FastAPI maintenance service
 
-```text
-GitHub
-  -> CI: install / test / build
-  -> build immutable container images
-  -> push images to ACR
-  -> deploy to dev
-  -> smoke test
-  -> controlled promotion to qa
-  -> controlled promotion to prod
-```
+The maintenance service is internal to the cluster and is not intended to be directly exposed to browsers.
 
-The same application artifacts should be promoted rather than rebuilt differently for each environment.
+Frontend browser traffic uses the relative /autocare/api path. Nginx/Ingress/service routing provides the environment-specific backend path.
 
-## Current Verified Boundary
+## 8. Environments
 
-As of 2026-09-15:
+The current delivery environments are:
 
-- The AutoCare source tree is committed under `apps/autocare/`.
-- The local Development application flow is verified.
-- The API test suite has 9 passing tests.
-- The frontend production build has passed.
-- AKS infrastructure is provisioned and verified.
-- No AutoCare application workload has yet been verified as deployed to AKS.
-- No Kubernetes Ingress for AutoCare has yet been verified.
-- Azure SQL application connectivity has not yet been verified.
-- GitHub Actions CI/CD has not yet been implemented.
+    dev / uat / prod
 
-## Architectural Decisions to Validate
+Do not use qa as the current environment name. Older Project-Azure-AKS documents used QA; that is historical.
 
-- [ ] Confirm the final AKS network configuration.
-- [ ] Confirm ACR availability and permissions.
-- [ ] Containerize and validate all three application components.
-- [ ] Deploy the Development namespace and verify service-to-service connectivity.
-- [ ] Validate Azure SQL connectivity from the deployed API.
-- [ ] Select and validate the Ingress/Application Gateway integration.
-- [ ] Validate HTTPS/SSL.
-- [ ] Determine the safest GitHub Actions runner/network model for private AKS.
-- [ ] Define promotion and approval controls for QA and Production.
+Application repositories use environment-specific Kubernetes directories:
+
+    k8s/
+    ├── dev/
+    ├── uat/
+    └── prod/
+
+## 9. Git and CI/CD Architecture
+
+The application repositories use:
+
+    feature -> PR -> dev -> PR -> uat -> PR -> main -> prod approval
+
+Production uses a GitHub Environment approval gate.
+
+Azure authentication uses GitHub OIDC and user-assigned managed identity rather than stored Azure client secrets.
+
+The deployment workflow separates:
+
+1. application validation
+2. offline Kubernetes validation
+3. image build
+4. deployment
+5. independent verification
+
+The private AKS API is why the deployment runners are self-hosted inside the Azure VNet.
+
+## 10. Current Verified Boundaries
+
+Verified:
+
+- private AKS cluster exists
+- AKS nodes are Ready
+- Azure CNI Overlay is configured
+- OIDC and Workload Identity are enabled
+- local Kubernetes accounts are disabled
+- private ACRs are provisioned
+- private SQL endpoint is provisioned
+- private Key Vault endpoint is provisioned
+- VNet private DNS resolver path is provisioned
+- runner VM and self-hosted runners are operational
+- application promotion workflows have completed successfully for frontend, API, and maintenance service
+
+Do not infer that a resource is currently working merely because an older document says it was planned or because a resource exists in Azure. Use direct verification for runtime claims.
+
+## 11. Documentation Ownership
+
+This repository is now the project documentation home for:
+
+- architecture
+- Azure/AKS infrastructure decisions
+- troubleshooting
+- cross-repository operational incidents
+
+The three application repositories remain the source of truth for application code and application-specific implementation documents.
+
+See:
+
+- docs/TROUBLESHOOTING.md — consolidated incident record
+- docs/NETWORKING.md — networking concepts and current architecture notes
+- docs/AKS_VERIFIED_STATE.md — verified cluster snapshot; refresh it whenever a new direct cluster verification is performed
